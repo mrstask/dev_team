@@ -3,6 +3,7 @@ from rich.panel import Panel
 
 import config
 from core import create_client, run_react_loop
+from dtypes import FileContent, TestResult
 from prompts import TESTER_AGENT_SYSTEM_PROMPT
 
 
@@ -10,14 +11,14 @@ class TestAgent:
     def __init__(self):
         self.client = create_client("tester")
 
-    def generate_tests(self, task: dict, impl_files: list[dict]) -> list[dict] | None:
+    def run(self, task: dict, impl_files: list[dict]) -> TestResult:
         """Generate pytest tests for the given implementation files."""
         console = config.console
 
         py_files = [f for f in impl_files if f["path"].endswith(".py") and f["path"].startswith("backend/")]
         if not py_files:
             console.print("[dim]  No Python files to test — skipping test generation.[/dim]")
-            return []
+            return TestResult(files=[])
 
         config.print_agent_rule("Test Agent", "tester")
 
@@ -26,18 +27,24 @@ class TestAgent:
             {"role": "user", "content": _build_test_prompt(task, py_files)},
         ]
 
-        def _on_write(result: dict) -> list[dict] | None:
-            files = result.get("files", [])
-            summary = result.get("summary", "")
+        def _on_write(raw: dict) -> list[dict] | None:
+            files = raw.get("files", [])
+            summary = raw.get("summary", "")
             console.print(f"  [green]✓[/green] {len(files)} test file(s) generated")
             _print_test_summary(files, summary)
             return files
 
-        return run_react_loop(
+        raw_files = run_react_loop(
             self.client, messages,
             max_rounds=8,
             on_write_files=_on_write,
         )
+
+        if isinstance(raw_files, list):
+            return TestResult(files=[FileContent(**f) for f in raw_files])
+        if isinstance(raw_files, dict) and raw_files.get("files"):
+            return TestResult(files=[FileContent(**f) for f in raw_files["files"]])
+        return TestResult(files=[])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

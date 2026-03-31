@@ -8,6 +8,7 @@ from rich.text import Text
 
 import config
 from core import create_client
+from dtypes import CIResult
 from prompts import COMMIT_SYSTEM_PROMPT
 
 
@@ -15,12 +16,12 @@ class CIAgent:
     def __init__(self):
         self.client = create_client("ci")
 
-    def run(self, task: dict, files: list[dict], summary: str) -> dict:
+    def run(self, task: dict, files: list[dict], summary: str) -> CIResult:
         """
         1. Write files to disk
         2. Run tox from project root
-        3. If green  → generate commit message via LLM, git commit, return {"status": "committed", "sha": ...}
-        4. If red    → return {"status": "failed", "output": last N lines}
+        3. If green  → generate commit message via LLM, git commit
+        4. If red    → return failed result with tox output
         """
         config.print_agent_rule("CI Agent", "ci", extra=f"{len(files)} file(s)")
 
@@ -34,44 +35,17 @@ class CIAgent:
             config.console.print(f"  [green]wrote[/green] {f['path']}")
 
         # ── 2. Run tox ────────────────────────────────────────────────────────
-        config.console.print("\n[dim]  Running tox ...[/dim]")
-        tox_output = ""
-        try:
-            process = subprocess.Popen(
-                ["tox"],
-                cwd=str(config.ROOT),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                text=True,
-                bufsize=1,
-            )
-            
-            with Live("", console=config.console, refresh_per_second=4, transient=True) as live:
-                while True:
-                    line = process.stdout.readline()
-                    if not line and process.poll() is not None:
-                        break
-                    if line:
-                        tox_output += line
-                        live.update(Text(f"  {line.strip()}", style="dimitalic"))
-            
-            process.wait(timeout=300)
-            returncode = process.returncode
-        except Exception as e:
-            config.console.print(f"[red]  tox execution failed: {e}[/red]")
-            return {"status": "failed", "output": str(e)}
-
+        returncode, tox_output = self._run_tox()
         last_lines = "\n".join(tox_output.splitlines()[-40:])
 
         if returncode != 0:
             config.console.print(Panel(last_lines, title="[red]tox FAILED[/red]", border_style="red"))
-            # Roll back written files so workspace stays clean
             for p in written:
                 try:
                     p.unlink()
                 except OSError:
                     pass
-            return {"status": "failed", "output": last_lines}
+            return CIResult(status="failed", output=last_lines)
 
         config.console.print(Panel(last_lines, title="[green]tox PASSED[/green]", border_style="green"))
 
@@ -90,13 +64,41 @@ class CIAgent:
         )
         if commit_result.returncode != 0:
             config.console.print(f"[red]  git commit failed: {commit_result.stderr}[/red]")
-            return {"status": "commit_failed", "output": commit_result.stderr}
+            return CIResult(status="commit_failed", output=commit_result.stderr)
 
         sha = _get_head_sha(config.ROOT)
         config.console.print(f"[bold green]  ✓ Committed {sha[:8]}: {commit_msg}[/bold green]")
-        return {"status": "committed", "sha": sha, "commit_message": commit_msg}
+        return CIResult(status="committed", sha=sha, commit_message=commit_msg)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _run_tox() -> tuple[int, str]:
+        tox_output = ""
+        config.console.print("\n[dim]  Running tox ...[/dim]")
+        try:
+            process = subprocess.Popen(
+                ["tox"],
+                cwd=str(config.ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+
+            with Live("", console=config.console, refresh_per_second=4, transient=True) as live:
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        tox_output += line
+                        live.update(Text(f"  {line.strip()}", style="dimitalic"))
+
+            process.wait(timeout=300)
+            return process.returncode, tox_output
+        except Exception as e:
+            return 1, str(e)
 
     def _generate_commit_message(self, task: dict, files: list[dict], summary: str) -> str:
         paths = ", ".join(f["path"] for f in files[:8])
@@ -123,7 +125,6 @@ class CIAgent:
                 return msg
         except Exception:
             pass
-        # Fallback
         return f"feat: {task['title'][:65]}"
 
 

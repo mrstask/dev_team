@@ -144,20 +144,16 @@ def _handle_architect_todo(task: dict) -> None:
     console = config.console
     result = ClaudeAgent("architect").run(task)
 
-    if not result or not result.get("files"):
+    if not result or not result.files:
         console.print("[red]Architect produced no output.[/red]")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         return
 
-    _save_context(task["id"], "architect", {
-        "files": result["files"],
-        "summary": result.get("summary", ""),
-        "subtasks": result.get("subtasks", []),
-    })
+    _save_context(task["id"], "architect", result.model_dump())
 
     _replace_action(task, Action.REVIEW)
-    console.print(f"[green]Architect done — {len(result['files'])} file(s). Awaiting PM review.[/green]")
+    console.print(f"[green]Architect done — {len(result.files)} file(s). Awaiting PM review.[/green]")
 
 
 def _handle_architect_review(task: dict) -> None:
@@ -174,10 +170,10 @@ def _handle_architect_review(task: dict) -> None:
     summary = ctx.get("summary", "")
 
     pm = PMAgent()
-    decision = pm.review_architect(task, files, subtasks, summary)
+    decision = pm.run_architect_review(task, files, subtasks, summary)
 
-    if decision.get("approved"):
-        mods = decision.get("subtask_modifications", [])
+    if decision.approved:
+        mods = decision.subtask_modifications
         for mod in mods:
             idx = mod.get("index", -1)
             if 0 <= idx < len(subtasks):
@@ -211,7 +207,7 @@ def _handle_architect_review(task: dict) -> None:
         _replace_action(task, None)
         console.print(f"[bold green]PM approved — {len(subtask_ids)} subtask(s) created.[/bold green]")
     else:
-        feedback = decision.get("feedback", "No specific feedback.")
+        feedback = decision.feedback or "No specific feedback."
         _append_feedback(task, feedback, "PM rejected architect output")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
@@ -232,19 +228,16 @@ def _handle_develop_todo(task: dict) -> None:
         previous_files=previous_files,
     )
 
-    if not result or not result.get("files"):
+    if not result or not result.files:
         console.print("[red]Developer produced no output.[/red]")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         return
 
-    _save_context(task["id"], "developer", {
-        "files": result["files"],
-        "summary": result.get("summary", ""),
-    })
+    _save_context(task["id"], "developer", result.model_dump())
 
     _replace_action(task, Action.REVIEW)
-    console.print(f"[green]Developer done — {len(result['files'])} file(s). Awaiting PM review.[/green]")
+    console.print(f"[green]Developer done — {len(result.files)} file(s). Awaiting PM review.[/green]")
 
 
 def _handle_develop_review(task: dict) -> None:
@@ -259,12 +252,12 @@ def _handle_develop_review(task: dict) -> None:
     files = ctx["files"]
     summary = ctx.get("summary", "")
 
-    reviewer_result = ReviewerAgent().review(task, files, summary)
+    reviewer_result = ReviewerAgent().run(task, files, summary)
 
-    if not reviewer_result.get("approved"):
+    if not reviewer_result.approved:
         _save_context(task["id"], "previous_files", files)
-        issues = reviewer_result.get("issues", [])
-        comment = reviewer_result.get("overall_comment", "")
+        issues = reviewer_result.issues
+        comment = reviewer_result.overall_comment
         _append_feedback(
             task,
             "\n".join(f"- {i}" for i in issues) + f"\n\nOverall: {comment}",
@@ -276,15 +269,15 @@ def _handle_develop_review(task: dict) -> None:
         return
 
     pm = PMAgent()
-    decision = pm.review_developer(task, files, summary)
+    decision = pm.run_developer_review(task, files, summary)
 
-    if decision.get("approved"):
+    if decision.approved:
         _db.move_task(task["id"], Status.TESTING)
         _replace_action(task, Action.TODO)
         console.print("[bold green]PM approved developer output. Moving to testing.[/bold green]")
     else:
         _save_context(task["id"], "previous_files", files)
-        feedback = decision.get("feedback", "No specific feedback.")
+        feedback = decision.feedback or "No specific feedback."
         _append_feedback(task, feedback, "PM rejected developer output")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
@@ -304,20 +297,19 @@ def _handle_testing_todo(task: dict) -> None:
     files = ctx["files"]
     summary = ctx.get("summary", "")
 
-    test_files = TestAgent().generate_tests(task, files) or []
-    all_files = files + test_files
+    test_result = TestAgent().run(task, files)
+    all_files = files + [f.model_dump() for f in test_result.files]
 
     ci_result = CIAgent().run(task, all_files, summary)
 
     _save_context(task["id"], "testing", {
         "files": all_files,
-        "ci_result": ci_result,
+        "ci_result": ci_result.model_dump(),
         "summary": summary,
     })
 
     _replace_action(task, Action.REVIEW)
-    ci_status = ci_result.get("status", "unknown")
-    console.print(f"[green]Testing done — CI status: {ci_status}. Awaiting PM review.[/green]")
+    console.print(f"[green]Testing done — CI status: {ci_result.status}. Awaiting PM review.[/green]")
 
 
 def _handle_testing_review(task: dict) -> None:
@@ -330,15 +322,15 @@ def _handle_testing_review(task: dict) -> None:
         return
 
     files = ctx["files"]
-    ci_result = ctx["ci_result"]
+    ci_result_raw = ctx["ci_result"]
     summary = ctx.get("summary", "")
-    tox_output = ci_result.get("output", "")
+    tox_output = ci_result_raw.get("output", "") or ""
 
     pm = PMAgent()
-    decision = pm.review_testing(task, files, tox_output, summary)
+    decision = pm.run_testing_review(task, files, tox_output, summary)
 
-    if decision.get("approved"):
-        if ci_result.get("status") == "committed":
+    if decision.approved:
+        if ci_result_raw.get("status") == "committed":
             _clear_context(task["id"])
             _replace_action(task, None)
             _db.move_task(task["id"], Status.DONE)
@@ -348,14 +340,14 @@ def _handle_testing_review(task: dict) -> None:
         else:
             _db.move_task(task["id"], Status.DEVELOP)
             _save_context(task["id"], "previous_files", files)
-            _append_feedback(task, f"CI status: {ci_result.get('status')}. {tox_output[-500:]}", "CI did not commit")
+            _append_feedback(task, f"CI status: {ci_result_raw.get('status')}. {tox_output[-500:]}", "CI did not commit")
             _increment_retry(task)
             _replace_action(task, Action.TODO)
             console.print("[yellow]PM approved but CI didn't commit. Back to develop.[/yellow]")
     else:
         _db.move_task(task["id"], Status.DEVELOP)
         _save_context(task["id"], "previous_files", [f for f in files if not f["path"].startswith("backend/tests/")])
-        feedback = decision.get("feedback", "")
+        feedback = decision.feedback or ""
         _append_feedback(task, feedback, "PM rejected testing output")
         _increment_retry(task)
         _replace_action(task, Action.TODO)

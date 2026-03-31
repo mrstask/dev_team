@@ -16,6 +16,7 @@ from rich.panel import Panel
 import config
 from clients.claude_client import ClaudeClient
 from core import ROLES
+from dtypes import ArchitectResult, FileContent, SubtaskProposal
 from prompts import ARCHITECT_USER_PROMPT, STAGING_INSTRUCTION
 
 # Staging dir — agent writes here; PM reviews; CI agent writes to real paths
@@ -28,11 +29,10 @@ class ClaudeAgent:
     def __init__(self, role: str = "architect"):
         self.role = role
         self.role_def = ROLES[role]
-        system = self.role_def["system_prompt"]
-        self.system_prompt = system.strip() + STAGING_INSTRUCTION
+        self.system_prompt = self.role_def["system_prompt"].strip() + STAGING_INSTRUCTION
         self.client = ClaudeClient(console=config.console)
 
-    def run(self, task: dict, feedback: str = "", skeleton_files: list[dict] | None = None) -> dict | None:
+    def run(self, task: dict, feedback: str = "", skeleton_files: list[dict] | None = None) -> ArchitectResult | None:
         config.print_agent_rule(self.role_def["name"], "architect")
 
         # Clear and recreate staging dir
@@ -56,18 +56,7 @@ class ClaudeAgent:
             shutil.rmtree(STAGING_DIR, ignore_errors=True)
             return None
 
-        # Collect everything the agent wrote to staging
-        files: list[dict] = []
-        for p in sorted(STAGING_DIR.rglob("*")):
-            if p.is_file():
-                rel = p.relative_to(STAGING_DIR)
-                try:
-                    content = p.read_text(encoding="utf-8")
-                except Exception:
-                    content = p.read_bytes().decode("utf-8", errors="replace")
-                files.append({"path": str(rel), "content": content})
-
-        # Clean up staging
+        files = self._collect_staging_files()
         shutil.rmtree(STAGING_DIR, ignore_errors=True)
 
         if not files:
@@ -75,26 +64,36 @@ class ClaudeAgent:
             return None
 
         summary = response.summary or f"Produced {len(files)} skeleton file(s)."
+        subtasks = self._extract_subtasks(summary, task, files)
+
+        result = ArchitectResult(files=files, summary=summary, subtasks=subtasks)
+
         config.console.print(Panel(f"[bold]Architect summary:[/bold]\n{summary}", border_style="magenta"))
         config.console.print(f"[bold]{len(files)} skeleton file(s) staged.[/bold]")
         for f in files:
-            config.console.print(f"  [cyan]{f['path']}[/cyan]  ({len(f['content'])} chars)")
-
-        subtasks = self._extract_subtasks(summary, task, files)
+            config.console.print(f"  [cyan]{f.path}[/cyan]  ({len(f.content)} chars)")
         if subtasks:
             config.console.print(f"[bold]{len(subtasks)} subtask(s) proposed.[/bold]")
             for i, st in enumerate(subtasks):
-                config.console.print(f"  [{i}] [cyan]{st['title']}[/cyan]")
+                config.console.print(f"  [{i}] [cyan]{st.title}[/cyan]")
 
-        return {
-            "status": "pending_review",
-            "files": files,
-            "summary": summary,
-            "subtasks": subtasks,
-        }
+        return result
 
     @staticmethod
-    def _extract_subtasks(summary: str, task: dict, files: list[dict]) -> list[dict]:
+    def _collect_staging_files() -> list[FileContent]:
+        files: list[FileContent] = []
+        for p in sorted(STAGING_DIR.rglob("*")):
+            if p.is_file():
+                rel = p.relative_to(STAGING_DIR)
+                try:
+                    content = p.read_text(encoding="utf-8")
+                except Exception:
+                    content = p.read_bytes().decode("utf-8", errors="replace")
+                files.append(FileContent(path=str(rel), content=content))
+        return files
+
+    @staticmethod
+    def _extract_subtasks(summary: str, task: dict, files: list[FileContent]) -> list[SubtaskProposal]:
         """Parse subtask proposals from the architect's summary.
 
         Expected format in the summary:
@@ -104,7 +103,7 @@ class ClaudeAgent:
 
         Falls back to a single catch-all subtask if none are found.
         """
-        subtasks: list[dict] = []
+        subtasks: list[SubtaskProposal] = []
         in_section = False
 
         for line in summary.splitlines():
@@ -114,27 +113,21 @@ class ClaudeAgent:
             if in_section:
                 m = re.match(r"^\s*\d+\.\s*\[([^\]]+)\]\s*(.+)$", line.strip())
                 if m:
-                    subtasks.append({
-                        "title": m.group(1).strip(),
-                        "description": m.group(2).strip(),
-                        "priority": task["priority"],
-                        "labels": ["developer"],
-                    })
+                    subtasks.append(SubtaskProposal(
+                        title=m.group(1).strip(),
+                        description=m.group(2).strip(),
+                        priority=task["priority"],
+                    ))
                 elif line.strip() and not re.match(r"^\s*\d+\.", line):
                     break  # end of subtask section
 
         if not subtasks:
-            # Default: single subtask covering all skeleton files
-            file_list = "\n".join(f"- {f['path']}" for f in files[:30])
-            subtasks = [{
-                "title": f"Implement: {task['title'][:60]}",
-                "description": (
-                    "Implement all TODOs in the following skeleton files:\n\n"
-                    f"{file_list}"
-                ),
-                "priority": task["priority"],
-                "labels": ["developer"],
-            }]
+            file_list = "\n".join(f"- {f.path}" for f in files[:30])
+            subtasks = [SubtaskProposal(
+                title=f"Implement: {task['title'][:60]}",
+                description=f"Implement all TODOs in the following skeleton files:\n\n{file_list}",
+                priority=task["priority"],
+            )]
 
         return subtasks
 

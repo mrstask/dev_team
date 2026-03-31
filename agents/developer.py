@@ -1,6 +1,7 @@
 """DevAgent — ReAct loop over Ollama/OpenRouter with tool calling."""
 import config
 from core import ROLES, create_client, run_react_loop
+from dtypes import DeveloperResult, FileContent
 
 
 class DevAgent:
@@ -21,7 +22,7 @@ class DevAgent:
         feedback: str = "",
         skeleton_files: list[dict] | None = None,
         previous_files: list[dict] | None = None,
-    ) -> dict | None:
+    ) -> DeveloperResult | None:
         """ReAct loop: read context -> write files."""
         messages = [
             {"role": "system", "content": self.role_def["system_prompt"]},
@@ -29,11 +30,18 @@ class DevAgent:
         ]
         config.print_agent_rule(self.role_def["name"], "developer")
 
-        return run_react_loop(self.client, messages)
+        raw = run_react_loop(self.client, messages)
+        if not raw or not raw.get("files"):
+            return None
 
+        return DeveloperResult(
+            files=[FileContent(**f) for f in raw["files"]],
+            summary=raw.get("summary", ""),
+        )
+
+    @staticmethod
     def _build_prompt(
-        self,
-        task: dict,
+            task: dict,
         feedback: str = "",
         skeleton_files: list[dict] | None = None,
         previous_files: list[dict] | None = None,
