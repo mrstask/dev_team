@@ -1,4 +1,6 @@
 """Client for the langgraph_dashboard API — task management."""
+from datetime import datetime, timezone
+
 import httpx
 
 
@@ -95,6 +97,70 @@ class DashboardClient:
             t for t in self.get_tasks()
             if t.get("parent_task_id") == parent_task_id
         ]
+
+    def create_run(
+        self,
+        task_id: int,
+        agent_id: int | None,
+        pipeline_type: str = "dev_team",
+    ) -> int:
+        """Create a run record at the start of agent processing. Returns run ID or -1 on failure."""
+        payload = {
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "pipeline_type": pipeline_type,
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(f"{self.base_url}/runs", json=payload)
+                if resp.status_code == 201:
+                    return resp.json()["id"]
+        except Exception:
+            pass
+        return -1
+
+    def update_run(
+        self,
+        run_id: int,
+        status: str,
+        output_summary: str | None = None,
+        output_payload: dict | None = None,
+        error_message: str | None = None,
+        logs_text: str | None = None,
+    ) -> None:
+        """Update a run record on completion or failure. Best-effort — silently ignores errors."""
+        if run_id < 0:
+            return
+        payload: dict = {
+            "status": status,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if output_summary is not None:
+            payload["output_summary"] = output_summary
+        if output_payload is not None:
+            payload["output_payload"] = output_payload
+        if error_message is not None:
+            payload["error_message"] = error_message
+        if logs_text is not None:
+            payload["logs_text"] = logs_text
+        try:
+            with httpx.Client(timeout=30) as client:
+                client.patch(f"{self.base_url}/runs/{run_id}", json=payload)
+        except Exception:
+            pass
+
+    def get_agent_ids(self) -> dict[str, int]:
+        """Return a mapping of agent slug → id for all registered agents."""
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(f"{self.base_url}/agents")
+                if resp.status_code == 200:
+                    return {a["slug"]: a["id"] for a in resp.json() if a.get("slug")}
+        except Exception:
+            pass
+        return {}
 
     def sync_agents(self, roles_dict: dict) -> None:
         """Register missing roles as agents in the dashboard."""

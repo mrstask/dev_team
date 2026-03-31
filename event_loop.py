@@ -32,6 +32,18 @@ _db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
 
 _PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
+# Populated at loop start — maps agent slug → dashboard agent id
+_agent_id_cache: dict[str, int] = {}
+
+
+def _refresh_agent_cache() -> None:
+    """Refresh the slug→id map from the dashboard. Best-effort."""
+    global _agent_id_cache
+    try:
+        _agent_id_cache = _db.get_agent_ids()
+    except Exception:
+        pass
+
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
@@ -45,6 +57,8 @@ def run_loop(poll_interval: int = config.EVENT_LOOP_POLL_INTERVAL) -> None:
         f"  Dashboard:     {config.DASHBOARD_URL}  project {config.DASHBOARD_PROJECT_ID}",
         border_style="cyan",
     ))
+
+    _refresh_agent_cache()
 
     while True:
         try:
@@ -142,16 +156,22 @@ def _process_task(task: dict) -> None:
 def _handle_architect_todo(task: dict) -> None:
     """Run ClaudeAgent, save output, set action:review for PM."""
     console = config.console
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("architect"), "architect")
     result = ClaudeAgent("architect").run(task)
 
     if not result or not result.files:
         console.print("[red]Architect produced no output.[/red]")
+        _db.update_run(run_id, "failed", error_message="No output produced")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         return
 
     _save_context(task["id"], "architect", result.model_dump())
-
+    _db.update_run(
+        run_id, "completed",
+        output_summary=f"{len(result.files)} file(s): {(result.summary or '')[:200]}",
+        output_payload=result.model_dump(),
+    )
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Architect done — {len(result.files)} file(s). Awaiting PM review.[/green]")
 
@@ -159,9 +179,11 @@ def _handle_architect_todo(task: dict) -> None:
 def _handle_architect_review(task: dict) -> None:
     """PM reviews architect output. Approve → create subtasks. Reject → retry."""
     console = config.console
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("pm"), "pm-review")
     ctx = _load_context(task["id"], "architect")
     if not ctx:
         console.print("[red]No architect context found. Resetting to action:todo.[/red]")
+        _db.update_run(run_id, "failed", error_message="No architect context found")
         _replace_action(task, Action.TODO)
         return
 
@@ -205,22 +227,26 @@ def _handle_architect_review(task: dict) -> None:
         })
 
         _replace_action(task, None)
+        _db.update_run(run_id, "completed", output_summary=f"Approved — {len(subtask_ids)} subtask(s) created")
         console.print(f"[bold green]PM approved — {len(subtask_ids)} subtask(s) created.[/bold green]")
     else:
         feedback = decision.feedback or "No specific feedback."
         _append_feedback(task, feedback, "PM rejected architect output")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
+        _db.update_run(run_id, "completed", output_summary=f"Rejected: {feedback[:200]}")
         console.print("[yellow]PM rejected architect output. Retrying.[/yellow]")
 
 
 def _handle_develop_todo(task: dict) -> None:
     """Run DevAgent on a development task. Set action:review when done."""
     console = config.console
+    role = get_role_for_task(task) or "developer"
+    run_id = _db.create_run(task["id"], _agent_id_cache.get(role) or _agent_id_cache.get("developer"), "developer")
+
     skeleton_files = _load_context(task["id"], "skeleton_files")
     previous_files = _load_context(task["id"], "previous_files")
 
-    role = get_role_for_task(task) or "developer"
     result = DevAgent(role).run(
         task,
         feedback="",
@@ -230,12 +256,17 @@ def _handle_develop_todo(task: dict) -> None:
 
     if not result or not result.files:
         console.print("[red]Developer produced no output.[/red]")
+        _db.update_run(run_id, "failed", error_message="No output produced")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         return
 
     _save_context(task["id"], "developer", result.model_dump())
-
+    _db.update_run(
+        run_id, "completed",
+        output_summary=f"{len(result.files)} file(s): {(result.summary or '')[:200]}",
+        output_payload=result.model_dump(),
+    )
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Developer done — {len(result.files)} file(s). Awaiting PM review.[/green]")
 
@@ -243,9 +274,11 @@ def _handle_develop_todo(task: dict) -> None:
 def _handle_develop_review(task: dict) -> None:
     """PM reviews developer output. Approve → testing. Reject → retry."""
     console = config.console
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("reviewer"), "code-review")
     ctx = _load_context(task["id"], "developer")
     if not ctx:
         console.print("[red]No developer context found. Resetting to action:todo.[/red]")
+        _db.update_run(run_id, "failed", error_message="No developer context found")
         _replace_action(task, Action.TODO)
         return
 
@@ -258,6 +291,7 @@ def _handle_develop_review(task: dict) -> None:
         _save_context(task["id"], "previous_files", files)
         issues = reviewer_result.issues
         comment = reviewer_result.overall_comment
+        _db.update_run(run_id, "completed", output_summary=f"Rejected: {len(issues)} issue(s). {comment[:150]}")
         _append_feedback(
             task,
             "\n".join(f"- {i}" for i in issues) + f"\n\nOverall: {comment}",
@@ -268,12 +302,16 @@ def _handle_develop_review(task: dict) -> None:
         console.print(f"[yellow]Reviewer rejected — {len(issues)} issue(s). Retrying.[/yellow]")
         return
 
+    _db.update_run(run_id, "completed", output_summary="Code review passed")
+
+    pm_run_id = _db.create_run(task["id"], _agent_id_cache.get("pm"), "pm-review")
     pm = PMAgent()
     decision = pm.run_developer_review(task, files, summary)
 
     if decision.approved:
         _db.move_task(task["id"], Status.TESTING)
         _replace_action(task, Action.TODO)
+        _db.update_run(pm_run_id, "completed", output_summary="Approved — moving to testing")
         console.print("[bold green]PM approved developer output. Moving to testing.[/bold green]")
     else:
         _save_context(task["id"], "previous_files", files)
@@ -281,15 +319,18 @@ def _handle_develop_review(task: dict) -> None:
         _append_feedback(task, feedback, "PM rejected developer output")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
+        _db.update_run(pm_run_id, "completed", output_summary=f"Rejected: {feedback[:200]}")
         console.print("[yellow]PM rejected developer output. Retrying.[/yellow]")
 
 
 def _handle_testing_todo(task: dict) -> None:
     """Run TestAgent + CIAgent. Set action:review for PM."""
     console = config.console
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("tester"), "testing")
     ctx = _load_context(task["id"], "developer")
     if not ctx:
         console.print("[red]No developer context for testing. Moving back to develop.[/red]")
+        _db.update_run(run_id, "failed", error_message="No developer context for testing")
         _db.move_task(task["id"], Status.DEVELOP)
         _replace_action(task, Action.TODO)
         return
@@ -308,6 +349,12 @@ def _handle_testing_todo(task: dict) -> None:
         "summary": summary,
     })
 
+    _db.update_run(
+        run_id, "completed",
+        output_summary=f"CI: {ci_result.status}. {len(test_result.files)} test file(s).",
+        output_payload=ci_result.model_dump(),
+        logs_text=ci_result.output[:4000] if ci_result.output else None,
+    )
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Testing done — CI status: {ci_result.status}. Awaiting PM review.[/green]")
 
@@ -315,9 +362,11 @@ def _handle_testing_todo(task: dict) -> None:
 def _handle_testing_review(task: dict) -> None:
     """PM reviews test results. Approve → done. Reject → back to develop."""
     console = config.console
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("pm"), "pm-review")
     ctx = _load_context(task["id"], "testing")
     if not ctx:
         console.print("[red]No testing context found. Resetting to action:todo.[/red]")
+        _db.update_run(run_id, "failed", error_message="No testing context found")
         _replace_action(task, Action.TODO)
         return
 
@@ -334,6 +383,7 @@ def _handle_testing_review(task: dict) -> None:
             _clear_context(task["id"])
             _replace_action(task, None)
             _db.move_task(task["id"], Status.DONE)
+            _db.update_run(run_id, "completed", output_summary=f"Approved — task done. SHA: {ci_result_raw.get('sha', '')}")
             console.print(f"[bold green]✓ Task #{task['id']} done![/bold green]")
             if task.get("parent_task_id"):
                 _check_single_parent(task["parent_task_id"])
@@ -343,6 +393,7 @@ def _handle_testing_review(task: dict) -> None:
             _append_feedback(task, f"CI status: {ci_result_raw.get('status')}. {tox_output[-500:]}", "CI did not commit")
             _increment_retry(task)
             _replace_action(task, Action.TODO)
+            _db.update_run(run_id, "completed", output_summary=f"Approved but CI status={ci_result_raw.get('status')}")
             console.print("[yellow]PM approved but CI didn't commit. Back to develop.[/yellow]")
     else:
         _db.move_task(task["id"], Status.DEVELOP)
@@ -351,6 +402,7 @@ def _handle_testing_review(task: dict) -> None:
         _append_feedback(task, feedback, "PM rejected testing output")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
+        _db.update_run(run_id, "completed", output_summary=f"Rejected: {feedback[:200]}")
         console.print("[yellow]PM rejected testing output. Back to develop.[/yellow]")
 
 
