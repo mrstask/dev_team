@@ -3,7 +3,11 @@
 Uses the local `claude` CLI (your Claude Code account) — no API key needed.
 The agent writes skeleton files to dev_team/_staging/ so nothing touches the
 real project paths until PM approval.
+
+In autonomous mode, the architect also proposes development subtasks in its
+summary output, which the PM agent reviews before creating them.
 """
+import re
 import shutil
 from pathlib import Path
 
@@ -139,7 +143,67 @@ class ClaudeAgent:
         for f in files:
             console.print(f"  [cyan]{f['path']}[/cyan]  ({len(f['content'])} chars)")
 
-        return {"status": "pending_review", "files": files, "summary": summary}
+        subtasks = self._extract_subtasks(summary, task, files)
+        if subtasks:
+            console.print(f"[bold]{len(subtasks)} subtask(s) proposed.[/bold]")
+            for i, st in enumerate(subtasks):
+                console.print(f"  [{i}] [cyan]{st['title']}[/cyan]")
+
+        return {
+            "status": "pending_review",
+            "files": files,
+            "summary": summary,
+            "subtasks": subtasks,
+        }
+
+    def _extract_subtasks(
+        self,
+        summary: str,
+        task: dict,
+        files: list[dict],
+    ) -> list[dict]:
+        """Parse subtask proposals from the architect's summary.
+
+        Expected format in the summary:
+            SUBTASKS:
+            1. [Title here] Description of focused implementation unit
+            2. [Title here] Description of focused implementation unit
+
+        Falls back to a single catch-all subtask if none are found.
+        """
+        subtasks: list[dict] = []
+        in_section = False
+
+        for line in summary.splitlines():
+            if re.match(r"^\s*SUBTASKS\s*:?\s*$", line, re.IGNORECASE):
+                in_section = True
+                continue
+            if in_section:
+                m = re.match(r"^\s*\d+\.\s*\[([^\]]+)\]\s*(.+)$", line.strip())
+                if m:
+                    subtasks.append({
+                        "title": m.group(1).strip(),
+                        "description": m.group(2).strip(),
+                        "priority": task["priority"],
+                        "labels": ["developer"],
+                    })
+                elif line.strip() and not re.match(r"^\s*\d+\.", line):
+                    break  # end of subtask section
+
+        if not subtasks:
+            # Default: single subtask covering all skeleton files
+            file_list = "\n".join(f"- {f['path']}" for f in files[:30])
+            subtasks = [{
+                "title": f"Implement: {task['title'][:60]}",
+                "description": (
+                    "Implement all TODOs in the following skeleton files:\n\n"
+                    f"{file_list}"
+                ),
+                "priority": task["priority"],
+                "labels": ["developer"],
+            }]
+
+        return subtasks
 
     def _build_prompt(
         self,
@@ -157,6 +221,15 @@ class ClaudeAgent:
             "1. Read reference files as needed (use their real paths).\n"
             "2. Produce skeleton files with typed signatures, docstrings, and TODO comments.\n"
             "3. Write every skeleton file to dev_team/_staging/<real-path>.\n"
+            "4. In your final summary, propose development subtasks.\n\n"
+            "After writing all skeleton files, end your summary with a SUBTASKS section:\n\n"
+            "SUBTASKS:\n"
+            "1. [Short title] Description of a focused implementation unit\n"
+            "2. [Short title] Description of another unit\n\n"
+            "Each subtask should be independently implementable by a Developer agent.\n"
+            "Split by module, layer, or feature — avoid subtasks that are too large (>300 LOC)\n"
+            "or too small (single function). Include enough context in each description\n"
+            "for the developer to work without seeing the full task spec.\n"
         )
         if skeleton_files:
             prompt += f"\nSkeleton files to implement ({len(skeleton_files)} files):\n"

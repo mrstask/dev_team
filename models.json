@@ -3,6 +3,10 @@
     "backend": "claude-code",
     "model": "claude-opus-4-6"
   },
+  "pm": {
+    "backend": "openrouter",
+    "model": "anthropic/claude-sonnet-4"
+  },
   "developer": {
     "backend": "openrouter",
     "model": "xiaomi/mimo-v2-flash"

@@ -52,6 +52,50 @@ class DashboardClient:
         with httpx.Client(timeout=30) as client:
             client.patch(f"{self.base_url}/tasks/{task_id}", json=payload)
 
+    def create_task(
+        self,
+        title: str,
+        description: str,
+        status: str,
+        priority: str,
+        labels: list[str],
+        parent_task_id: int | None = None,
+    ) -> int:
+        """Create a new task in the dashboard. Returns the new task ID."""
+        payload = {
+            "title": title,
+            "description": description,
+            "status": status,
+            "priority": priority,
+            "labels": labels,
+            "project_id": self.project_id,
+            "assigned_agent_id": None,
+        }
+        if parent_task_id is not None:
+            payload["parent_task_id"] = parent_task_id
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(f"{self.base_url}/tasks", json=payload)
+            resp.raise_for_status()
+            return resp.json()["id"]
+
+    def update_task(self, task_id: int, updates: dict) -> dict:
+        """Patch arbitrary fields on a task."""
+        with httpx.Client(timeout=30) as client:
+            resp = client.patch(f"{self.base_url}/tasks/{task_id}", json=updates)
+            resp.raise_for_status()
+            return resp.json()
+
+    def set_labels(self, task_id: int, labels: list[str]) -> dict:
+        """Replace all labels on a task."""
+        return self.update_task(task_id, {"labels": labels})
+
+    def get_subtasks(self, parent_task_id: int) -> list[dict]:
+        """Return all tasks whose parent_task_id matches."""
+        return [
+            t for t in self.get_tasks()
+            if t.get("parent_task_id") == parent_task_id
+        ]
+
     def sync_agents(self, roles_dict: dict) -> None:
         """Register missing roles as agents in the dashboard."""
         with httpx.Client(timeout=30) as client:

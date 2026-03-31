@@ -48,6 +48,9 @@ OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 DASHBOARD_URL        = "http://localhost:8000/api"
 DASHBOARD_PROJECT_ID = 3   # HAP — Habr Agentic Pipeline
 
+# ── Task Statuses ─────────────────────────────────────────────────────────
+STATUSES = ["backlog", "architect", "develop", "testing", "done", "failed"]
+
 # ── Agent Behaviour ────────────────────────────────────────────────────────────
 MAX_TOOL_ROUNDS = 25       # Max ReAct rounds before giving up
 
@@ -58,6 +61,13 @@ RETRY_WITH_CONTEXT = True
 
 # Directory where retry context (previous attempt files) is persisted
 RETRY_DIR = ROOT / "dev_team" / "_retry"
+
+# Broader context storage — architect output, PM review data, retry files
+CONTEXT_DIR = ROOT / "dev_team" / "_context"
+
+# ── Event Loop ────────────────────────────────────────────────────────────
+EVENT_LOOP_POLL_INTERVAL = 10   # seconds between dashboard polls
+MAX_TASK_RETRIES = 5            # max retries per task before marking failed
 
 # Map task labels → agent role keys
 LABEL_TO_ROLE: dict[str, str] = {

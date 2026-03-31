@@ -1,0 +1,80 @@
+%%{init: {'theme': 'dark', 'themeVariables': {'fontSize': '14px'}}}%%
+flowchart TD
+    classDef pm fill:#1e3a5f,stroke:#60a5fa,color:#fff
+    classDef agent fill:#1d3557,stroke:#457b9d,color:#fff
+    classDef decision fill:#6a040f,stroke:#d00000,color:#fff
+    classDef state fill:#3a0ca3,stroke:#7209b6,color:#fff
+    classDef success fill:#065f46,stroke:#34d399,color:#fff
+    classDef fail fill:#7f1d1d,stroke:#f87171,color:#fff
+    classDef loop fill:#374151,stroke:#9ca3af,color:#fff
+
+    %% Event Loop
+    POLL([Event Loop polls dashboard]):::loop
+    POLL --> FETCH{Actionable task found?}:::decision
+    FETCH -- No --> SLEEP[Sleep poll_interval]:::loop
+    SLEEP --> POLL
+    FETCH -- Yes --> DISPATCH{Status + Action?}:::decision
+
+    %% Also check parent completions on idle
+    FETCH -- No --> CHECK_PARENTS[Check parent completions]:::loop
+    CHECK_PARENTS --> SLEEP
+
+    %% ── ARCHITECT PHASE ──
+    DISPATCH -- "architect\n+ action:todo" --> ARCH["Architect Agent\n(Claude Code SDK)\nSkeleton files + subtask proposals"]:::agent
+    ARCH --> ARCH_OK{Output?}:::decision
+    ARCH_OK -- None --> ARCH_RETRY[Increment retry\nKeep action:todo]:::fail
+    ARCH_RETRY --> POLL
+    ARCH_OK -- Files --> SAVE_ARCH[Save to _context/\nSet action:review]:::state
+
+    SAVE_ARCH --> POLL
+
+    DISPATCH -- "architect\n+ action:review" --> PM_ARCH["PM Agent\nReviews skeletons + subtasks"]:::pm
+    PM_ARCH --> PM_ARCH_OK{Approved?}:::decision
+
+    PM_ARCH_OK -- Yes --> CREATE_SUB["Create subtasks\n(develop + action:todo)\nSave skeleton context per subtask\nParent: remove action label"]:::state
+    CREATE_SUB --> POLL
+
+    PM_ARCH_OK -- No --> ARCH_FB["Append feedback\nIncrement retry\nSet action:todo"]:::fail
+    ARCH_FB --> POLL
+
+    %% ── DEVELOP PHASE ──
+    DISPATCH -- "develop\n+ action:todo" --> DEV["Developer Agent\n(OpenRouter ReAct loop)\nImplements skeletons / fixes"]:::agent
+    DEV --> DEV_OK{Output?}:::decision
+    DEV_OK -- None --> DEV_RETRY[Increment retry\nKeep action:todo]:::fail
+    DEV_RETRY --> POLL
+    DEV_OK -- Files --> SAVE_DEV[Save to _context/\nSet action:review]:::state
+    SAVE_DEV --> POLL
+
+    DISPATCH -- "develop\n+ action:review" --> REVIEWER["Reviewer Agent\n(Ollama)\nCode correctness check"]:::agent
+    REVIEWER --> REV_OK{Reviewer approved?}:::decision
+    REV_OK -- No --> REV_FB["Save previous files\nAppend issues\nIncrement retry\nSet action:todo"]:::fail
+    REV_FB --> POLL
+
+    REV_OK -- Yes --> PM_DEV["PM Agent\nStrategic review"]:::pm
+    PM_DEV --> PM_DEV_OK{Approved?}:::decision
+    PM_DEV_OK -- Yes --> TO_TEST["Move to testing\nSet action:todo"]:::state
+    TO_TEST --> POLL
+    PM_DEV_OK -- No --> DEV_FB["Save previous files\nAppend feedback\nIncrement retry\nSet action:todo"]:::fail
+    DEV_FB --> POLL
+
+    %% ── TESTING PHASE ──
+    DISPATCH -- "testing\n+ action:todo" --> TESTER["Tester Agent\n(Ollama)\nGenerate pytest tests"]:::agent
+    TESTER --> CI["CI Agent\n(Ollama)\nWrite files + tox + git commit"]:::agent
+    CI --> SAVE_TEST[Save to _context/\nSet action:review]:::state
+    SAVE_TEST --> POLL
+
+    DISPATCH -- "testing\n+ action:review" --> PM_TEST["PM Agent\nFinal review"]:::pm
+    PM_TEST --> PM_TEST_OK{Approved?}:::decision
+
+    PM_TEST_OK -- "Yes\n+ committed" --> DONE([Task DONE]):::success
+    DONE --> PARENT_CHECK{Has parent?}:::decision
+    PARENT_CHECK -- Yes --> CHECK_SUBS["All subtasks done?\nIf yes → parent done"]:::success
+    PARENT_CHECK -- No --> POLL
+    CHECK_SUBS --> POLL
+
+    PM_TEST_OK -- No --> TEST_FB["Move to develop\nAppend feedback\nIncrement retry\nSet action:todo"]:::fail
+    TEST_FB --> POLL
+
+    %% ── RETRY LIMIT ──
+    DISPATCH --> RETRY_CHECK{Retries >= max?}:::decision
+    RETRY_CHECK -- Yes --> FAILED([Task FAILED\nerror:max-retries]):::fail

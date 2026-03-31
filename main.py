@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Habr Agentic Pipeline — Dev Team CLI
+Habr Agentic Pipeline — Autonomous Dev Team
 
-You are the Tech/Project Manager. This tool manages a team of local LLM
-coding agents (powered by Ollama) that implement the habr-agentic project.
+Runs a fully autonomous event loop that polls the task dashboard and
+dispatches work to agents based on task status + action labels.
 
 Usage:
-  python main.py            # start interactive PM session (default)
-  python main.py session    # same as above
-  python main.py board      # print task board
-  python main.py run <id>   # run specific task by ID
-  python main.py status     # check Ollama + dashboard health
+  python main.py              # start the autonomous event loop (default)
+  python main.py run          # same as above
+  python main.py board        # print task board
+  python main.py kick <id>    # move a backlog task into architect + action:todo
+  python main.py status       # check health of Ollama, OpenRouter, dashboard
 """
 import sys
 
@@ -18,9 +18,10 @@ import click
 from rich.console import Console
 
 import config
-from ollama_client import OllamaClient
 from dashboard_client import DashboardClient
-from orchestrator import session, show_board, run_task
+from event_loop import run_loop
+from ollama_client import OllamaClient
+from orchestrator import show_board
 from roles import ROLES
 
 console = Console()
@@ -29,50 +30,61 @@ console = Console()
 @click.group(invoke_without_command=True)
 @click.pass_context
 def cli(ctx: click.Context) -> None:
-    """Dev team CLI — you are the Tech/Project Manager."""
+    """Autonomous dev team — runs event loop by default."""
     if ctx.invoked_subcommand is None:
-        _ensure_ollama()
+        _ensure_backends()
         _sync_agents()
-        session()
-
-
-@cli.command("session")
-def session_cmd() -> None:
-    """Start interactive PM session (default)."""
-    _ensure_ollama()
-    _sync_agents()
-    session()
-
-
-@cli.command("board")
-def board_cmd() -> None:
-    """Print current task board."""
-    show_board()
+        run_loop()
 
 
 @cli.command("run")
+@click.option("--poll-interval", default=config.EVENT_LOOP_POLL_INTERVAL, help="Seconds between polls")
+def run_cmd(poll_interval: int) -> None:
+    """Start the autonomous event loop."""
+    _ensure_backends()
+    _sync_agents()
+    run_loop(poll_interval=poll_interval)
+
+
+@cli.command("board")
+@click.option("--status", default=None, help="Filter by status")
+def board_cmd(status: str | None) -> None:
+    """Display current task board."""
+    show_board(status_filter=status)
+
+
+@cli.command("kick")
 @click.argument("task_id", type=int)
-def run_cmd(task_id: int) -> None:
-    """Run a specific task by ID."""
-    _ensure_ollama()
-    d    = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
-    task = d.get_task(task_id)
-    run_task(task)
+def kick_cmd(task_id: int) -> None:
+    """Move a backlog task into architect + action:todo to start processing."""
+    db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+    task = db.get_task(task_id)
+
+    if task["status"] != "backlog":
+        console.print(f"[yellow]Task #{task_id} is in '{task['status']}', not backlog. Skipping.[/yellow]")
+        return
+
+    db.move_task(task_id, "architect")
+    labels = list(task.get("labels", []))
+    if "action:todo" not in labels:
+        labels.append("action:todo")
+    db.set_labels(task_id, labels)
+    console.print(f"[green]Task #{task_id} moved to architect + action:todo.[/green]")
 
 
 @cli.command("status")
 def status_cmd() -> None:
     """Check Ollama, OpenRouter, and dashboard API health."""
-    # ── Per-step model table ───────────────────────────────────────────────────
     from rich.table import Table
+
     _BACKEND_COLOR = {"claude-code": "magenta", "openrouter": "cyan", "ollama": "yellow"}
     tbl = Table(title="Step configuration", header_style="bold")
-    tbl.add_column("Step",    width=12)
+    tbl.add_column("Step", width=12)
     tbl.add_column("Backend", width=14)
-    tbl.add_column("Model",   min_width=30)
-    tbl.add_column("Status",  width=16)
+    tbl.add_column("Model", min_width=30)
+    tbl.add_column("Status", width=16)
     for name, s in config.STEPS.items():
-        color  = _BACKEND_COLOR.get(s["backend"], "white")
+        color = _BACKEND_COLOR.get(s["backend"], "white")
         status = "[dim]n/a[/dim]"
         if s["backend"] == "ollama":
             client = OllamaClient(config.OLLAMA_URL, s["model"])
@@ -87,10 +99,9 @@ def status_cmd() -> None:
         tbl.add_row(name, f"[{color}]{s['backend']}[/{color}]", s["model"], status)
     console.print(tbl)
 
-    # ── Dashboard ─────────────────────────────────────────────────────────────
     console.print()
     try:
-        d     = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+        d = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
         tasks = d.get_tasks()
         by_s: dict[str, int] = {}
         for t in tasks:
@@ -105,24 +116,28 @@ def status_cmd() -> None:
 
 # ── Guards ────────────────────────────────────────────────────────────────────
 
-def _ensure_ollama() -> None:
+def _ensure_backends() -> None:
+    """Check that required backends are available."""
     ollama_steps = {name: s for name, s in config.STEPS.items() if s["backend"] == "ollama"}
-    if not ollama_steps:
-        return  # no ollama steps configured
+    if ollama_steps:
+        client = OllamaClient(config.OLLAMA_URL, next(iter(ollama_steps.values()))["model"])
+        if not client.is_alive():
+            console.print("[red]Ollama is offline.  Start it:[/red]  ollama serve")
+            sys.exit(1)
+        missing = [s["model"] for s in ollama_steps.values() if not client.is_model_available(s["model"])]
+        if missing:
+            pulls = "\n".join(f"  ollama pull {m}" for m in missing)
+            console.print(f"[yellow]Models not pulled — run:[/yellow]\n{pulls}")
+            sys.exit(1)
 
-    client = OllamaClient(config.OLLAMA_URL, next(iter(ollama_steps.values()))["model"])
-    if not client.is_alive():
-        console.print("[red]Ollama is offline.  Start it:[/red]  ollama serve")
-        sys.exit(1)
-
-    missing = [s["model"] for s in ollama_steps.values() if not client.is_model_available(s["model"])]
-    if missing:
-        pulls = "\n".join(f"  ollama pull {m}" for m in missing)
-        console.print(f"[yellow]Models not pulled — run:[/yellow]\n{pulls}")
+    openrouter_steps = {name: s for name, s in config.STEPS.items() if s["backend"] == "openrouter"}
+    if openrouter_steps and not config.OPENROUTER_API_KEY:
+        console.print("[red]OPENROUTER_API_KEY not set. Add it to habr-agentic/.env[/red]")
         sys.exit(1)
 
 
 def _sync_agents() -> None:
+    """Register missing agent roles in the dashboard."""
     try:
         d = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
         d.sync_agents(ROLES)

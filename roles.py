@@ -271,6 +271,12 @@ Use fetch-based typed API client (no axios, no React Query).
 Call write_files with all backend + frontend files when done.
 """,
     },
+    "pm": {
+        "name": "Project Manager",
+        "description": "Autonomous PM — reviews agent output and makes approve/reject decisions",
+        "system_prompt": "",  # PM uses specialized prompts in pm_agent.py
+    },
+
     "tester": {
         "name": "Test Engineer",
         "description": "Writes pytest unit tests for backend Python modules",
