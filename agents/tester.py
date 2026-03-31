@@ -1,6 +1,5 @@
 """TestAgent — generates pytest unit tests for approved implementation files."""
 from rich.panel import Panel
-from rich.rule import Rule
 
 import config
 from core import create_client, run_react_loop
@@ -20,11 +19,7 @@ class TestAgent:
             console.print("[dim]  No Python files to test — skipping test generation.[/dim]")
             return []
 
-        tst = config.step("tester")
-        console.print(Rule(
-            f"[bold]Test Agent[/bold]  ·  {tst['backend']}  ·  {tst['model']}",
-            style="yellow",
-        ))
+        config.print_agent_rule("Test Agent", "tester")
 
         messages = [
             {"role": "system", "content": TESTER_AGENT_SYSTEM_PROMPT},

@@ -1,6 +1,4 @@
 """DevAgent — ReAct loop over Ollama/OpenRouter with tool calling."""
-from rich.rule import Rule
-
 import config
 from core import ROLES, create_client, run_react_loop
 
@@ -29,12 +27,7 @@ class DevAgent:
             {"role": "system", "content": self.role_def["system_prompt"]},
             {"role": "user", "content": self._build_prompt(task, feedback, skeleton_files, previous_files)},
         ]
-
-        style = "cyan" if self._backend == "openrouter" else "yellow"
-        config.console.print(Rule(
-            f"[bold]{self.role_def['name']}[/bold]  ·  {self._backend}  ·  {self.model}",
-            style=style,
-        ))
+        config.print_agent_rule(self.role_def["name"], "developer")
 
         return run_react_loop(self.client, messages)
 

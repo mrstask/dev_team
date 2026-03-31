@@ -19,11 +19,7 @@ class ReviewerAgent:
         console = config.console
         prompt = _build_review_prompt(task, files, agent_summary)
 
-        rev = config.step("reviewer")
-        console.print(Rule(
-            f"[bold]Reviewer[/bold]  ·  {rev['backend']}  ·  {rev['model']}",
-            style="yellow",
-        ))
+        config.print_agent_rule("Reviewer", "reviewer")
 
         try:
             final_resp, _ = stream_chat_with_display(

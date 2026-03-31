@@ -12,12 +12,11 @@ import shutil
 from pathlib import Path
 
 from rich.panel import Panel
-from rich.rule import Rule
 
 import config
 from clients.claude_client import ClaudeClient
 from core import ROLES
-from prompts import STAGING_INSTRUCTION
+from prompts import ARCHITECT_USER_PROMPT, STAGING_INSTRUCTION
 
 # Staging dir — agent writes here; PM reviews; CI agent writes to real paths
 STAGING_DIR: Path = config.ROOT / "dev_team" / "_staging"
@@ -29,22 +28,12 @@ class ClaudeAgent:
     def __init__(self, role: str = "architect"):
         self.role = role
         self.role_def = ROLES[role]
-        # Strip /no_think — Qwen3-only directive
         system = self.role_def["system_prompt"]
-        self.system_prompt = system.lstrip("/no_think").strip() + STAGING_INSTRUCTION
+        self.system_prompt = system.strip() + STAGING_INSTRUCTION
         self.client = ClaudeClient(console=config.console)
 
-    def run(
-        self,
-        task: dict,
-        feedback: str = "",
-        skeleton_files: list[dict] | None = None,
-    ) -> dict | None:
-        arch = config.step("architect")
-        config.console.print(Rule(
-            f"[bold]{self.role_def['name']}[/bold]  ·  {arch['backend']}  ·  {arch['model']}",
-            style="magenta",
-        ))
+    def run(self, task: dict, feedback: str = "", skeleton_files: list[dict] | None = None) -> dict | None:
+        config.print_agent_rule(self.role_def["name"], "architect")
 
         # Clear and recreate staging dir
         if STAGING_DIR.exists():
@@ -57,7 +46,7 @@ class ClaudeAgent:
             response = self.client.run(
                 prompt,
                 system_prompt=self.system_prompt,
-                model=arch["model"],
+                model=config.step("architect")["model"],
                 cwd=str(config.ROOT),
                 allowed_tools=["Read", "Glob", "Grep", "Write"],
                 max_turns=40,
@@ -104,12 +93,8 @@ class ClaudeAgent:
             "subtasks": subtasks,
         }
 
-    def _extract_subtasks(
-        self,
-        summary: str,
-        task: dict,
-        files: list[dict],
-    ) -> list[dict]:
+    @staticmethod
+    def _extract_subtasks(summary: str, task: dict, files: list[dict]) -> list[dict]:
         """Parse subtask proposals from the architect's summary.
 
         Expected format in the summary:
@@ -153,31 +138,13 @@ class ClaudeAgent:
 
         return subtasks
 
-    def _build_prompt(
-        self,
-        task: dict,
-        feedback: str,
-        skeleton_files: list[dict] | None,
-    ) -> str:
-        labels = ", ".join(task.get("labels", []))
-        prompt = (
-            f"Task: {task['title']}\n"
-            f"Priority: {task['priority']}\n"
-            f"Labels: {labels}\n\n"
-            f"Description:\n{task.get('description', 'No description.')}\n\n"
-            "Instructions:\n"
-            "1. Read reference files as needed (use their real paths).\n"
-            "2. Produce skeleton files with typed signatures, docstrings, and TODO comments.\n"
-            "3. Write every skeleton file to dev_team/_staging/<real-path>.\n"
-            "4. In your final summary, propose development subtasks.\n\n"
-            "After writing all skeleton files, end your summary with a SUBTASKS section:\n\n"
-            "SUBTASKS:\n"
-            "1. [Short title] Description of a focused implementation unit\n"
-            "2. [Short title] Description of another unit\n\n"
-            "Each subtask should be independently implementable by a Developer agent.\n"
-            "Split by module, layer, or feature — avoid subtasks that are too large (>300 LOC)\n"
-            "or too small (single function). Include enough context in each description\n"
-            "for the developer to work without seeing the full task spec.\n"
+    @staticmethod
+    def _build_prompt(task: dict, feedback: str, skeleton_files: list[dict] | None) -> str:
+        prompt = ARCHITECT_USER_PROMPT.format(
+            title=task["title"],
+            priority=task["priority"],
+            labels=", ".join(task.get("labels", [])),
+            description=task.get("description", "No description."),
         )
         if skeleton_files:
             prompt += f"\nSkeleton files to implement ({len(skeleton_files)} files):\n"

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.rule import Rule
 
 # Load .env from the project root
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
@@ -51,6 +52,23 @@ DASHBOARD_PROJECT_ID = 3
 
 # ── Shared Console ────────────────────────────────────────────────────────
 console = Console()
+
+# Style per backend for agent header rules
+_BACKEND_STYLES: dict[str, str] = {
+    "claude-code": "magenta",
+    "openrouter":  "cyan",
+    "ollama":      "yellow",
+}
+
+
+def print_agent_rule(name: str, step_name: str, *, extra: str = "") -> None:
+    """Print a styled Rule header for an agent step."""
+    cfg = step(step_name)
+    style = _BACKEND_STYLES.get(cfg["backend"], "white")
+    parts = f"[bold]{name}[/bold]  ·  {cfg['backend']}  ·  {cfg['model']}"
+    if extra:
+        parts += f"  ·  {extra}"
+    console.print(Rule(parts, style=style))
 
 # ── Agent Behaviour ────────────────────────────────────────────────────────────
 MAX_TOOL_ROUNDS = 25       # Max ReAct rounds before giving up

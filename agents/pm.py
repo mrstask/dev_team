@@ -51,11 +51,7 @@ class PMAgent:
 
     def _run_review(self, title: str, system_prompt: str, user_prompt: str) -> dict:
         console = config.console
-        pm = config.step("pm")
-        console.print(Rule(
-            f"[bold]PM — {title}[/bold]  ·  {pm['backend']}  ·  {pm['model']}",
-            style="blue",
-        ))
+        config.print_agent_rule(f"PM — {title}", "pm")
 
         try:
             final_resp, _ = stream_chat_with_display(

@@ -4,7 +4,6 @@ from pathlib import Path
 
 from rich.live import Live
 from rich.panel import Panel
-from rich.rule import Rule
 from rich.text import Text
 
 import config
@@ -23,11 +22,7 @@ class CIAgent:
         3. If green  → generate commit message via LLM, git commit, return {"status": "committed", "sha": ...}
         4. If red    → return {"status": "failed", "output": last N lines}
         """
-        ci = config.step("ci")
-        config.console.print(Rule(
-            f"[bold]CI Agent[/bold]  ·  {ci['backend']}  ·  {ci['model']}  ·  {len(files)} file(s)",
-            style="green",
-        ))
+        config.print_agent_rule("CI Agent", "ci", extra=f"{len(files)} file(s)")
 
         # ── 1. Write files ────────────────────────────────────────────────────
         written: list[Path] = []
