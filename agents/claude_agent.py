@@ -26,21 +26,10 @@ from rich.rule import Rule
 
 import config
 from core import ROLES
+from prompts import STAGING_INSTRUCTION
 
 # Staging dir — agent writes here; PM reviews; CI agent writes to real paths
 STAGING_DIR: Path = config.ROOT / "dev_team" / "_staging"
-
-# System prompt suffix that redirects writes to staging
-_STAGING_INSTRUCTION = f"""
-CRITICAL — FILE WRITING RULES:
-- You may READ files from anywhere in the project using their normal paths.
-- You must WRITE all output files into the staging directory: dev_team/_staging/
-- Preserve the full relative path inside staging.
-  Example: to produce backend/app/models/article.py
-           write to:  dev_team/_staging/backend/app/models/article.py
-- Do NOT write to any real project path — staging only.
-- Write every file completely (no truncation, no placeholders inside the file).
-"""
 
 
 class ClaudeAgent:
@@ -51,7 +40,7 @@ class ClaudeAgent:
         self.role_def = ROLES[role]
         # Strip /no_think — Qwen3-only directive
         system = self.role_def["system_prompt"]
-        self.system_prompt = system.lstrip("/no_think").strip() + _STAGING_INSTRUCTION
+        self.system_prompt = system.lstrip("/no_think").strip() + STAGING_INSTRUCTION
 
     def run(
         self,

@@ -1,0 +1,32 @@
+"""Prompt templates for all dev-team agents."""
+
+from prompts.architect import ARCHITECT_SYSTEM_PROMPT
+from prompts.ci import COMMIT_SYSTEM_PROMPT
+from prompts.dashboard_builder import DASHBOARD_BUILDER_SYSTEM_PROMPT
+from prompts.developer import DEVELOPER_SYSTEM_PROMPT
+from prompts.etl_porter import ETL_PORTER_SYSTEM_PROMPT
+from prompts.pipeline_builder import PIPELINE_BUILDER_SYSTEM_PROMPT
+from prompts.pm import PM_ARCHITECT_REVIEW, PM_DEVELOPER_REVIEW, PM_TESTING_REVIEW
+from prompts.review_engine import REVIEW_ENGINE_SYSTEM_PROMPT
+from prompts.reviewer import REVIEWER_SYSTEM_PROMPT
+from prompts.staging import STAGING_INSTRUCTION
+from prompts.tester import TESTER_ROLE_SYSTEM_PROMPT, TESTER_AGENT_SYSTEM_PROMPT
+from prompts.vision_embedding import VISION_EMBEDDING_SYSTEM_PROMPT
+
+__all__ = [
+    "ARCHITECT_SYSTEM_PROMPT",
+    "COMMIT_SYSTEM_PROMPT",
+    "DASHBOARD_BUILDER_SYSTEM_PROMPT",
+    "DEVELOPER_SYSTEM_PROMPT",
+    "ETL_PORTER_SYSTEM_PROMPT",
+    "PIPELINE_BUILDER_SYSTEM_PROMPT",
+    "PM_ARCHITECT_REVIEW",
+    "PM_DEVELOPER_REVIEW",
+    "PM_TESTING_REVIEW",
+    "REVIEW_ENGINE_SYSTEM_PROMPT",
+    "REVIEWER_SYSTEM_PROMPT",
+    "STAGING_INSTRUCTION",
+    "TESTER_ROLE_SYSTEM_PROMPT",
+    "TESTER_AGENT_SYSTEM_PROMPT",
+    "VISION_EMBEDDING_SYSTEM_PROMPT",
+]

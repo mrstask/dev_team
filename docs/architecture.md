@@ -2,7 +2,7 @@
 
 ## Overview
 
-The dev team is a fully autonomous, event-driven system that orchestrates multiple LLM agents to implement software tasks for the **Habr Agentic Pipeline** project. There is no human in the loop — an AI **PM agent** makes all review and approval decisions.
+The dev team is a fully autonomous, event-driven system that orchestrates multiple LLM agents to implement software tasks for a target project. There is no human in the loop — an AI **PM agent** makes all review and approval decisions.
 
 ## Event-Driven Design
 

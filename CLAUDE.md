@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Fully autonomous, event-driven multi-agent orchestration system ("Dev Team") that coordinates LLM agents across different backends (Claude Code SDK, OpenRouter, Ollama) to implement software tasks for the `habr-agentic` project. An AI PM agent makes all review/approval decisions — no human in the loop.
+Fully autonomous, event-driven multi-agent orchestration system ("Dev Team") that coordinates LLM agents across different backends (Claude Code SDK, OpenRouter, Ollama) to implement software tasks for a target project. An AI PM agent makes all review/approval decisions — no human in the loop.
 
 ## Running
 
@@ -20,10 +20,10 @@ Requires a virtual environment (`.venv/`) with `pip install -r requirements.txt`
 
 ## Environment
 
-- `OPENROUTER_API_KEY` — loaded from `habr-agentic/.env` (parent project)
+- `OPENROUTER_API_KEY` — loaded from `.env` (parent project root)
 - Ollama must be running at `localhost:11434`
 - Dashboard API must be running at `localhost:8000/api` (project ID 3)
-- Target project root is `habr-agentic/` (one level up, set in `config.py` as `ROOT`)
+- Target project root is one level up from `dev_team/`, set in `config.py` as `ROOT`
 
 ## Architecture
 
@@ -79,10 +79,24 @@ dev_team/
 │   ├── ollama_client.py     # Ollama REST API client
 │   └── openrouter_client.py # OpenRouter API client
 │
+├── prompts/             # Prompt templates (one file per agent/role)
+│   ├── architect.py     # Architect role system prompt
+│   ├── developer.py     # Developer role system prompt
+│   ├── etl_porter.py    # ETL Porter role system prompt
+│   ├── pipeline_builder.py  # Pipeline Builder role system prompt
+│   ├── review_engine.py # Review Engine role system prompt
+│   ├── vision_embedding.py  # Vision & Embedding role system prompt
+│   ├── dashboard_builder.py # Dashboard Builder role system prompt
+│   ├── tester.py        # Tester role + agent system prompts
+│   ├── reviewer.py      # Code reviewer system prompt
+│   ├── pm.py            # PM review prompts (architect/developer/testing)
+│   ├── ci.py            # Commit message system prompt
+│   └── staging.py       # Staging instruction for Claude agent
+│
 └── core/                # Shared infrastructure
     ├── llm.py           # Client factory, streaming display, JSON parsing
     ├── react_loop.py    # Shared ReAct loop + text tool call extraction
-    ├── roles.py         # Agent role definitions and system prompts
+    ├── roles.py         # Agent role definitions (imports prompts from prompts/)
     └── tools.py         # Tool implementations; cross-project reading via prefixes
 ```
 

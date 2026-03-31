@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Habr Agentic Pipeline — Autonomous Dev Team
+Autonomous Dev Team
 
 Runs a fully autonomous event loop that polls the task dashboard and
 dispatches work to agents based on task status + action labels.
@@ -104,7 +104,7 @@ def status_cmd() -> None:
         for t in tasks:
             by_s[t["status"]] = by_s.get(t["status"], 0) + 1
         total = sum(by_s.values())
-        config.console.print(f"Dashboard ({config.DASHBOARD_URL})  [green]OK[/green]  ({total} tasks in HAP)")
+        config.console.print(f"Dashboard ({config.DASHBOARD_URL})  [green]OK[/green]  ({total} tasks)")
         for s, n in sorted(by_s.items()):
             config.console.print(f"  {s}: {n}")
     except Exception as e:
@@ -129,7 +129,7 @@ def _ensure_backends() -> None:
 
     openrouter_steps = {name: s for name, s in config.STEPS.items() if s["backend"] == "openrouter"}
     if openrouter_steps and not config.OPENROUTER_API_KEY:
-        config.console.print("[red]OPENROUTER_API_KEY not set. Add it to habr-agentic/.env[/red]")
+        config.console.print("[red]OPENROUTER_API_KEY not set. Add it to .env[/red]")
         sys.exit(1)
 
 

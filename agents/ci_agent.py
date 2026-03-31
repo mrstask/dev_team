@@ -9,18 +9,7 @@ from rich.text import Text
 
 import config
 from core import create_client
-
-_COMMIT_SYSTEM = """/no_think
-You are a git commit message author.
-Write a single conventional commit message for the changes described.
-Format: <type>(<scope>): <short description>
-
-Types: feat, fix, test, refactor, chore
-Scope: the main module or area changed (e.g. models, schemas, pipeline, tests)
-Short description: imperative, ≤72 chars total, no period at end.
-
-Respond with ONLY the commit message string, nothing else.
-"""
+from prompts import COMMIT_SYSTEM_PROMPT
 
 
 class CIAgent:
@@ -128,7 +117,7 @@ class CIAgent:
         try:
             resp = self.client.chat(
                 messages=[
-                    {"role": "system", "content": _COMMIT_SYSTEM},
+                    {"role": "system", "content": COMMIT_SYSTEM_PROMPT},
                     {"role": "user",   "content": prompt},
                 ],
                 temperature=0.2,

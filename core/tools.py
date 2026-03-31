@@ -14,9 +14,8 @@ TOOL_SPECS: list[dict] = [
             "name": "read_file",
             "description": (
                 "Read a file's full contents. "
-                "Paths are relative to habr-agentic root. "
-                "Use prefix 'habr_admin:' to read from the habr_admin source project, "
-                "or 'lg_dashboard:' to read from the langgraph_dashboard project."
+                "Paths are relative to the project root. "
+                "Use prefix 'lg_dashboard:' to read from the langgraph_dashboard project."
             ),
             "parameters": {
                 "type": "object",
@@ -26,7 +25,6 @@ TOOL_SPECS: list[dict] = [
                         "description": (
                             "File path. Examples: "
                             "'backend/app/models/article.py', "
-                            "'habr_admin:backend/app/models/main.py', "
                             "'lg_dashboard:frontend/src/lib/api.ts'"
                         ),
                     }
@@ -48,7 +46,6 @@ TOOL_SPECS: list[dict] = [
                         "description": (
                             "Glob pattern relative to project root. "
                             "Examples: 'backend/app/**/*.py', "
-                            "'habr_admin:backend/app/etl/**/*.py', "
                             "'lg_dashboard:frontend/src/**/*.tsx'"
                         ),
                     }
@@ -73,7 +70,7 @@ TOOL_SPECS: list[dict] = [
                         "type": "string",
                         "description": (
                             "Directory to search in (default: 'backend'). "
-                            "Prefix with 'habr_admin:' or 'lg_dashboard:' for other projects."
+                            "Prefix with 'lg_dashboard:' for other projects."
                         ),
                     },
                 },
@@ -89,7 +86,7 @@ TOOL_SPECS: list[dict] = [
                 "Submit completed work. "
                 "Write ALL files you created or modified. "
                 "Call this ONCE when the task is fully implemented. "
-                "Paths must be relative to habr-agentic root."
+                "Paths must be relative to the project root."
             ),
             "parameters": {
                 "type": "object",
@@ -102,7 +99,7 @@ TOOL_SPECS: list[dict] = [
                             "properties": {
                                 "path": {
                                     "type": "string",
-                                    "description": "Path relative to habr-agentic root",
+                                    "description": "Path relative to project root",
                                 },
                                 "content": {
                                     "type": "string",
@@ -128,8 +125,11 @@ TOOL_SPECS: list[dict] = [
 
 def _resolve(path: str) -> tuple[Path, str]:
     """Return (base_dir, relative_path) after handling project prefixes."""
-    if path.startswith("habr_admin:"):
-        return config.HABR_ADMIN, path[len("habr_admin:"):]
+    # Check registered source projects
+    for prefix, base_path in config.SOURCE_PROJECTS.items():
+        tag = f"{prefix}:"
+        if path.startswith(tag):
+            return base_path, path[len(tag):]
     if path.startswith("lg_dashboard:"):
         return config.LANGGRAPH_DASHBOARD, path[len("lg_dashboard:"):]
     return config.ROOT, path

@@ -6,16 +6,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 from rich.console import Console
 
-# Load .env from the project root (habr-agentic/.env)
+# Load .env from the project root
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 # ── Project Paths ──────────────────────────────────────────────────────────────
-ROOT = Path(__file__).parent.parent           # habr-agentic/
+ROOT = Path(__file__).parent.parent           # target project root
 BACKEND = ROOT / "backend"
 FRONTEND = ROOT / "frontend"
 
-# Source projects to port from
-HABR_ADMIN = ROOT.parent / "habr_admin"
+# Source projects to port from (optional, configure per project)
+SOURCE_PROJECTS: dict[str, Path] = {}
 LANGGRAPH_DASHBOARD = ROOT.parent / "langgraph_dashboard"
 
 # ── Step model/backend configuration ──────────────────────────────────────────
@@ -47,7 +47,7 @@ OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
 # ── Dashboard API ──────────────────────────────────────────────────────────────
 DASHBOARD_URL        = "http://localhost:8000/api"
-DASHBOARD_PROJECT_ID = 3   # HAP — Habr Agentic Pipeline
+DASHBOARD_PROJECT_ID = 3
 
 # ── Shared Console ────────────────────────────────────────────────────────
 console = Console()

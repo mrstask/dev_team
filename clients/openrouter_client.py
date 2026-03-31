@@ -25,7 +25,7 @@ def _dump_debug_log(payload: dict, status: int, body: str) -> Path:
 
 
 class OpenRouterClient:
-    def __init__(self, api_key: str, model: str, site_url: str = "", site_name: str = "habr-agentic"):
+    def __init__(self, api_key: str, model: str, site_url: str = "", site_name: str = "dev-team"):
         self.api_key   = api_key
         self.model     = model
         self.site_url  = site_url
