@@ -17,12 +17,11 @@ import sys
 import click
 
 import config
-from dashboard_client import DashboardClient
+from clients import DashboardClient, OllamaClient
+from core import ROLES
 from dtypes import Action, Status
 from event_loop import run_loop
-from ollama_client import OllamaClient
 from orchestrator import show_board
-from roles import ROLES
 
 
 @click.group(invoke_without_command=True)

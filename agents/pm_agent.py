@@ -3,7 +3,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
-from llm import create_client, parse_json_response, stream_chat_with_display
+from core import create_client, parse_json_response, stream_chat_with_display
 
 # ── System Prompts ────────────────────────────────────────────────────────────
 

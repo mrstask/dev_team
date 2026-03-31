@@ -25,7 +25,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
-from roles import ROLES
+from core import ROLES
 
 # Staging dir — agent writes here; PM reviews; CI agent writes to real paths
 STAGING_DIR: Path = config.ROOT / "dev_team" / "_staging"

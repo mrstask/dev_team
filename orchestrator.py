@@ -6,7 +6,7 @@ The interactive PM session has been replaced by the autonomous event loop
 from rich.table import Table
 
 import config
-from dashboard_client import DashboardClient
+from clients import DashboardClient
 from dtypes import Status
 
 _db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)

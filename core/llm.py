@@ -6,8 +6,7 @@ from rich.live import Live
 from rich.text import Text
 
 import config
-from ollama_client import OllamaClient
-from openrouter_client import OpenRouterClient
+from clients import OllamaClient, OpenRouterClient
 
 
 # ── Client factory ────────────────────────────────────────────────────────────

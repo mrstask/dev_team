@@ -56,20 +56,35 @@ Each active status uses action labels:
 
 The Architect proposes subtasks in its summary. When PM approves, subtasks are created in the dashboard with `parent_task_id`. When all subtasks reach `done`, the parent auto-completes.
 
-### Key Modules
+### Project Layout
 
-- `event_loop.py` — Core autonomous loop, task dispatching, state transitions
-- `pm_agent.py` — AI PM with review_architect/review_developer/review_testing methods
-- `claude_agent.py` — Architect via Claude Code SDK, produces skeletons + subtask proposals
-- `agent.py` — Developer ReAct loop with tools (read_file, list_files, search_code, write_files)
-- `reviewer.py` — Code reviewer (Ollama)
-- `tester.py` — Pytest test generator (Ollama)
-- `ci_agent.py` — Writes files, runs tox, commits to git
-- `orchestrator.py` — Board display utility for monitoring
-- `tools.py` — Tool implementations; cross-project reading via prefixes (`habr_admin:`, `lg_dashboard:`)
-- `config.py` — All constants, paths, status definitions
-- `dashboard_client.py` — HTTPX client for the task dashboard API
-- `roles.py` — Agent role definitions and system prompts
+```
+dev_team/
+├── main.py              # CLI entry point (click)
+├── event_loop.py        # Core autonomous loop, task dispatching, state transitions
+├── orchestrator.py      # Board display utility for monitoring
+├── config.py            # All constants, paths, shared console
+├── dtypes.py            # TypedDicts (Task, FileContent, AgentResult) + Status/Action constants
+│
+├── agents/              # Agent implementations
+│   ├── claude_agent.py  # Architect via Claude Code SDK, skeletons + subtask proposals
+│   ├── agent.py         # Developer ReAct loop with tools
+│   ├── pm_agent.py      # AI PM with review_architect/review_developer/review_testing
+│   ├── reviewer.py      # Code reviewer (Ollama)
+│   ├── tester.py        # Pytest test generator (Ollama)
+│   └── ci_agent.py      # Writes files, runs tox, commits to git
+│
+├── clients/             # External API clients
+│   ├── dashboard_client.py  # HTTPX client for the task dashboard API
+│   ├── ollama_client.py     # Ollama REST API client
+│   └── openrouter_client.py # OpenRouter API client
+│
+└── core/                # Shared infrastructure
+    ├── llm.py           # Client factory, streaming display, JSON parsing
+    ├── react_loop.py    # Shared ReAct loop + text tool call extraction
+    ├── roles.py         # Agent role definitions and system prompts
+    └── tools.py         # Tool implementations; cross-project reading via prefixes
+```
 
 ### Context Storage (`_context/`)
 

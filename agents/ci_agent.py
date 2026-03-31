@@ -8,7 +8,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 import config
-from llm import create_client
+from core import create_client
 
 _COMMIT_SYSTEM = """/no_think
 You are a git commit message author.

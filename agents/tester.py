@@ -3,8 +3,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
-from llm import create_client
-from react_loop import run_react_loop
+from core import create_client, run_react_loop
 
 _SYSTEM_PROMPT = """/no_think
 You are a senior Python test engineer for the Habr Agentic Pipeline project.

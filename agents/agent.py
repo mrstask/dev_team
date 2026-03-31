@@ -2,9 +2,7 @@
 from rich.rule import Rule
 
 import config
-from llm import create_client
-from react_loop import run_react_loop
-from roles import ROLES
+from core import ROLES, create_client, run_react_loop
 
 
 class DevAgent:

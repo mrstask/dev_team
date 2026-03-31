@@ -7,10 +7,9 @@ import re
 from collections.abc import Callable
 
 import config
-from llm import stream_chat_with_display
-from ollama_client import OllamaClient
-from openrouter_client import OpenRouterClient
-from tools import TOOL_SPECS, dispatch
+from clients import OllamaClient, OpenRouterClient
+from .llm import stream_chat_with_display
+from .tools import TOOL_SPECS, dispatch
 
 
 # ── ReAct loop ────────────────────────────────────────────────────────────────

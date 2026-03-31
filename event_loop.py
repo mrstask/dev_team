@@ -23,15 +23,10 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
-from agent import DevAgent
-from ci_agent import CIAgent
-from claude_agent import ClaudeAgent
-from dashboard_client import DashboardClient
+from agents import CIAgent, ClaudeAgent, DevAgent, PMAgent, ReviewerAgent, TestAgent
+from clients import DashboardClient
+from core import get_role_for_task
 from dtypes import Action, LabelPrefix, Status
-from pm_agent import PMAgent
-from reviewer import ReviewerAgent
-from roles import get_role_for_task
-from tester import TestAgent
 
 _db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
 
