@@ -1,0 +1,8 @@
+{
+  "pythonVersion": "3.14",
+  "pythonPath": "/Users/stanislavlazarenko/.pyenv/versions/3.14.3/bin/python",
+  "include": ["."],
+  "extraPaths": ["."],
+  "typeCheckingMode": "basic",
+  "reportMissingModuleSource": "none"
+}

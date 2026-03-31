@@ -1,0 +1,22 @@
+{
+  "architect": {
+    "backend": "claude-code",
+    "model": "claude-opus-4-6"
+  },
+  "developer": {
+    "backend": "openrouter",
+    "model": "xiaomi/mimo-v2-flash"
+  },
+  "reviewer": {
+    "backend": "ollama",
+    "model": "devstral-small-2"
+  },
+  "tester": {
+    "backend": "ollama",
+    "model": "devstral-small-2"
+  },
+  "ci": {
+    "backend": "ollama",
+    "model": "devstral-small-2"
+  }
+}
