@@ -1,20 +1,10 @@
 """TestAgent — generates pytest unit tests for approved implementation files."""
-import json
-import re
-from pathlib import Path
-
-from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.text import Text
 
 import config
-from ollama_client import OllamaClient
-from tools import TOOL_SPECS, dispatch
-from agent import _extract_text_tool_calls
-
-console = Console()
+from llm import create_client
+from react_loop import run_react_loop
 
 _SYSTEM_PROMPT = """/no_think
 You are a senior Python test engineer for the Habr Agentic Pipeline project.
@@ -48,22 +38,16 @@ Output format: call write_files with all test files and a summary.
 
 class TestAgent:
     def __init__(self):
-        tst = config.step("tester")
-        self.model  = tst["model"]
-        self.client = OllamaClient(config.OLLAMA_URL, self.model)
+        self.client = create_client("tester")
 
     def generate_tests(self, task: dict, impl_files: list[dict]) -> list[dict] | None:
-        """
-        Generate pytest tests for the given implementation files.
-        Returns list of test file dicts {path, content} or None on failure.
-        """
-        # Only generate tests for Python backend files
+        """Generate pytest tests for the given implementation files."""
+        console = config.console
+
         py_files = [f for f in impl_files if f["path"].endswith(".py") and f["path"].startswith("backend/")]
         if not py_files:
             console.print("[dim]  No Python files to test — skipping test generation.[/dim]")
             return []
-
-        prompt = _build_test_prompt(task, py_files)
 
         tst = config.step("tester")
         console.print(Rule(
@@ -73,82 +57,24 @@ class TestAgent:
 
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt},
+            {"role": "user", "content": _build_test_prompt(task, py_files)},
         ]
 
-        for round_num in range(1, 8):
-            console.print(f"[dim]  round {round_num}/8 ...[/dim]", end="")
+        def _on_write(result: dict) -> list[dict] | None:
+            files = result.get("files", [])
+            summary = result.get("summary", "")
+            console.print(f"  [green]✓[/green] {len(files)} test file(s) generated")
+            _print_test_summary(files, summary)
+            return files
 
-            try:
-                accumulated = ""
-                final_resp  = {}
-                with Live("", console=console, refresh_per_second=10, transient=True) as live:
-                    for chunk, final in self.client.stream_chat(
-                        messages=messages, tools=TOOL_SPECS, temperature=0.05
-                    ):
-                        if final is not None:
-                            final_resp = final
-                            break
-                        accumulated += chunk
-                        # Show last line of reasoning to indicate progress
-                        last_line = accumulated.strip().splitlines()[-1] if accumulated.strip() else ""
-                        live.update(Text(f"  {last_line}", style="dimitalic"))
-
-                resp = final_resp
-            except Exception as e:
-                console.print(f"\n[red]  Test agent error: {e}[/red]")
-                return None
-
-            msg        = resp.get("message", {})
-            tool_calls = msg.get("tool_calls") or []
-            content    = msg.get("content", "")
-
-            if not tool_calls and content:
-                tool_calls = _extract_text_tool_calls(content)
-                if tool_calls:
-                    console.print(f" [dim](text-mode)[/dim]")
-
-            if not tool_calls:
-                console.print(" [yellow]no tool call[/yellow]")
-                if content:
-                    console.print(Panel(content[:400], title="Test agent text", border_style="yellow"))
-                return None
-
-            console.print()
-            messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
-
-            for call in tool_calls:
-                fn   = call.get("function", {})
-                name = fn.get("name", "")
-                args = fn.get("arguments", {})
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
-                        args = {}
-
-                arg_preview = ", ".join(f"{k}={repr(v)[:50]}" for k, v in args.items())
-                console.print(f"  [blue]⚙[/blue] [bold]{name}[/bold]({arg_preview})")
-
-                if name == "write_files":
-                    files   = args.get("files", [])
-                    summary = args.get("summary", "")
-                    n = len(files)
-                    console.print(f"  [green]✓[/green] {n} test file(s) generated")
-                    _print_test_summary(files, summary)
-                    return files
-
-                # read_file/list_files allowed for context gathering
-                from tools import dispatch
-                result     = dispatch(name, args)
-                result_str = result if isinstance(result, str) else json.dumps(result)
-                messages.append({"role": "tool", "content": result_str})
-
-        console.print("[red]Test agent: max rounds reached.[/red]")
-        return None
+        return run_react_loop(
+            self.client, messages,
+            max_rounds=8,
+            on_write_files=_on_write,
+        )
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _build_test_prompt(task: dict, py_files: list[dict]) -> str:
     lines = [
@@ -179,8 +105,8 @@ def _build_test_prompt(task: dict, py_files: list[dict]) -> str:
 
 
 def _print_test_summary(files: list[dict], summary: str) -> None:
-    console.print(Panel(
-        f"[bold]Tests generated:[/bold]\n" +
+    config.console.print(Panel(
+        "[bold]Tests generated:[/bold]\n" +
         "\n".join(f"  [blue]{f['path']}[/blue]  ({len(f['content'])} chars)" for f in files) +
         (f"\n\n{summary}" if summary else ""),
         border_style="blue",

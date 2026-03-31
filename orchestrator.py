@@ -3,18 +3,16 @@
 The interactive PM session has been replaced by the autonomous event loop
 (event_loop.py). This module retains the board display for CLI monitoring.
 """
-from rich.console import Console
 from rich.table import Table
 
 import config
 from dashboard_client import DashboardClient
-
-console = Console()
+from dtypes import Status
 
 _db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
 
 _PRIORITY_COLOR = {"critical": "red", "high": "yellow", "medium": "blue", "low": "dim"}
-_STATUS_ORDER = config.STATUSES
+_STATUS_ORDER = Status.ALL
 
 
 def show_board(status_filter: str | None = None) -> None:
@@ -49,4 +47,4 @@ def show_board(status_filter: str | None = None) -> None:
                 labels[:30],
                 parent,
             )
-        console.print(tbl)
+        config.console.print(tbl)

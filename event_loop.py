@@ -19,7 +19,6 @@ import time
 import traceback
 from pathlib import Path
 
-from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 
@@ -28,12 +27,11 @@ from agent import DevAgent
 from ci_agent import CIAgent
 from claude_agent import ClaudeAgent
 from dashboard_client import DashboardClient
+from dtypes import Action, LabelPrefix, Status
 from pm_agent import PMAgent
 from reviewer import ReviewerAgent
 from roles import get_role_for_task
 from tester import TestAgent
-
-console = Console()
 
 _db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
 
@@ -44,6 +42,7 @@ _PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 def run_loop(poll_interval: int = config.EVENT_LOOP_POLL_INTERVAL) -> None:
     """Synchronous polling loop — process one task at a time, forever."""
+    console = config.console
     console.print(Panel(
         "[bold cyan]Autonomous Event Loop[/bold cyan]\n"
         f"  Poll interval: {poll_interval}s\n"
@@ -73,12 +72,12 @@ def run_loop(poll_interval: int = config.EVENT_LOOP_POLL_INTERVAL) -> None:
 def _fetch_next_actionable() -> dict | None:
     """Return the highest-priority task that has an action label."""
     tasks = _db.get_tasks()
+    active_statuses = (Status.ARCHITECT, Status.DEVELOP, Status.TESTING)
     actionable = [
         t for t in tasks
-        if _get_action(t) is not None and t["status"] in ("architect", "develop", "testing")
+        if _get_action(t) is not None and t["status"] in active_statuses
     ]
     if not actionable:
-        # Also check for parent tasks whose subtasks are all done
         _check_parent_completions(tasks)
         return None
 
@@ -89,9 +88,9 @@ def _fetch_next_actionable() -> dict | None:
 def _get_action(task: dict) -> str | None:
     """Extract the action label (todo or review) from a task, if any."""
     for label in task.get("labels", []):
-        if label == "action:todo":
+        if label == Action.TODO:
             return "todo"
-        if label == "action:review":
+        if label == Action.REVIEW:
             return "review"
     return None
 
@@ -100,6 +99,7 @@ def _get_action(task: dict) -> str | None:
 
 def _process_task(task: dict) -> None:
     """Dispatch a task based on its status + action label."""
+    console = config.console
     status = task["status"]
     action = _get_action(task)
     tid = task["id"]
@@ -115,22 +115,22 @@ def _process_task(task: dict) -> None:
     if _get_retry_count(task) >= config.MAX_TASK_RETRIES:
         console.print(f"[red]Task #{tid} exceeded max retries ({config.MAX_TASK_RETRIES}). Marking failed.[/red]")
         _replace_action(task, None)
-        _add_label(task, "error:max-retries")
-        _db.move_task(tid, "failed")
+        _add_label(task, f"{LabelPrefix.ERROR}max-retries")
+        _db.move_task(tid, Status.FAILED)
         return
 
     try:
-        if status == "architect" and action == "todo":
+        if status == Status.ARCHITECT and action == "todo":
             _handle_architect_todo(task)
-        elif status == "architect" and action == "review":
+        elif status == Status.ARCHITECT and action == "review":
             _handle_architect_review(task)
-        elif status == "develop" and action == "todo":
+        elif status == Status.DEVELOP and action == "todo":
             _handle_develop_todo(task)
-        elif status == "develop" and action == "review":
+        elif status == Status.DEVELOP and action == "review":
             _handle_develop_review(task)
-        elif status == "testing" and action == "todo":
+        elif status == Status.TESTING and action == "todo":
             _handle_testing_todo(task)
-        elif status == "testing" and action == "review":
+        elif status == Status.TESTING and action == "review":
             _handle_testing_review(task)
         else:
             console.print(f"[yellow]Unhandled state: {status} + {action}[/yellow]")
@@ -138,39 +138,40 @@ def _process_task(task: dict) -> None:
         console.print(f"[red]Exception processing #{tid}: {exc}[/red]")
         _save_error_log(task, exc)
         _replace_action(task, None)
-        _add_label(task, "error:exception")
-        _db.move_task(tid, "failed")
+        _add_label(task, f"{LabelPrefix.ERROR}exception")
+        _db.move_task(tid, Status.FAILED)
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 def _handle_architect_todo(task: dict) -> None:
     """Run ClaudeAgent, save output, set action:review for PM."""
+    console = config.console
     result = ClaudeAgent("architect").run(task)
 
     if not result or not result.get("files"):
         console.print("[red]Architect produced no output.[/red]")
         _increment_retry(task)
-        _replace_action(task, "action:todo")  # retry
+        _replace_action(task, Action.TODO)
         return
 
-    # Save architect context for PM review
     _save_context(task["id"], "architect", {
         "files": result["files"],
         "summary": result.get("summary", ""),
         "subtasks": result.get("subtasks", []),
     })
 
-    _replace_action(task, "action:review")
+    _replace_action(task, Action.REVIEW)
     console.print(f"[green]Architect done — {len(result['files'])} file(s). Awaiting PM review.[/green]")
 
 
 def _handle_architect_review(task: dict) -> None:
     """PM reviews architect output. Approve → create subtasks. Reject → retry."""
+    console = config.console
     ctx = _load_context(task["id"], "architect")
     if not ctx:
         console.print("[red]No architect context found. Resetting to action:todo.[/red]")
-        _replace_action(task, "action:todo")
+        _replace_action(task, Action.TODO)
         return
 
     files = ctx["files"]
@@ -181,7 +182,6 @@ def _handle_architect_review(task: dict) -> None:
     decision = pm.review_architect(task, files, subtasks, summary)
 
     if decision.get("approved"):
-        # Apply any subtask modifications from PM
         mods = decision.get("subtask_modifications", [])
         for mod in mods:
             idx = mod.get("index", -1)
@@ -191,46 +191,41 @@ def _handle_architect_review(task: dict) -> None:
                 if "description" in mod:
                     subtasks[idx]["description"] = mod["description"]
 
-        # Create subtasks in dashboard
         subtask_ids = []
         for st in subtasks:
             sid = _db.create_task(
                 title=st["title"],
                 description=st["description"],
-                status="develop",
+                status=Status.DEVELOP,
                 priority=st.get("priority", task["priority"]),
-                labels=st.get("labels", ["developer"]) + ["action:todo"],
+                labels=st.get("labels", ["developer"]) + [Action.TODO],
                 parent_task_id=task["id"],
             )
             subtask_ids.append(sid)
             console.print(f"  [green]Created subtask #{sid}:[/green] {st['title']}")
 
-        # Save skeleton files so developer subtasks can reference them
         for st_id in subtask_ids:
             _save_context(st_id, "skeleton_files", files)
 
-        # Update parent task description with subtask references
         desc = task.get("description", "")
         subtask_lines = "\n".join(f"- #{sid}" for sid in subtask_ids)
         _db.update_task(task["id"], {
             "description": f"{desc}\n\n## Subtasks\n{subtask_lines}",
         })
 
-        # Parent task: remove action label, wait for subtasks to complete
         _replace_action(task, None)
         console.print(f"[bold green]PM approved — {len(subtask_ids)} subtask(s) created.[/bold green]")
     else:
-        # Rejected — send back to architect with feedback
         feedback = decision.get("feedback", "No specific feedback.")
         _append_feedback(task, feedback, "PM rejected architect output")
         _increment_retry(task)
-        _replace_action(task, "action:todo")
-        console.print(f"[yellow]PM rejected architect output. Retrying.[/yellow]")
+        _replace_action(task, Action.TODO)
+        console.print("[yellow]PM rejected architect output. Retrying.[/yellow]")
 
 
 def _handle_develop_todo(task: dict) -> None:
     """Run DevAgent on a development task. Set action:review when done."""
-    # Load skeleton files from context (saved when architect was approved)
+    console = config.console
     skeleton_files = _load_context(task["id"], "skeleton_files")
     previous_files = _load_context(task["id"], "previous_files")
 
@@ -245,35 +240,33 @@ def _handle_develop_todo(task: dict) -> None:
     if not result or not result.get("files"):
         console.print("[red]Developer produced no output.[/red]")
         _increment_retry(task)
-        _replace_action(task, "action:todo")
+        _replace_action(task, Action.TODO)
         return
 
-    # Save developer output for PM review
     _save_context(task["id"], "developer", {
         "files": result["files"],
         "summary": result.get("summary", ""),
     })
 
-    _replace_action(task, "action:review")
+    _replace_action(task, Action.REVIEW)
     console.print(f"[green]Developer done — {len(result['files'])} file(s). Awaiting PM review.[/green]")
 
 
 def _handle_develop_review(task: dict) -> None:
     """PM reviews developer output. Approve → testing. Reject → retry."""
+    console = config.console
     ctx = _load_context(task["id"], "developer")
     if not ctx:
         console.print("[red]No developer context found. Resetting to action:todo.[/red]")
-        _replace_action(task, "action:todo")
+        _replace_action(task, Action.TODO)
         return
 
     files = ctx["files"]
     summary = ctx.get("summary", "")
 
-    # Run code reviewer first
     reviewer_result = ReviewerAgent().review(task, files, summary)
 
     if not reviewer_result.get("approved"):
-        # Reviewer rejected — save files for retry
         _save_context(task["id"], "previous_files", files)
         issues = reviewer_result.get("issues", [])
         comment = reviewer_result.get("overall_comment", "")
@@ -283,66 +276,62 @@ def _handle_develop_review(task: dict) -> None:
             "Code reviewer rejected",
         )
         _increment_retry(task)
-        _replace_action(task, "action:todo")
+        _replace_action(task, Action.TODO)
         console.print(f"[yellow]Reviewer rejected — {len(issues)} issue(s). Retrying.[/yellow]")
         return
 
-    # Reviewer approved — now PM reviews
     pm = PMAgent()
     decision = pm.review_developer(task, files, summary)
 
     if decision.get("approved"):
-        # Move to testing
-        _db.move_task(task["id"], "testing")
-        _replace_action(task, "action:todo")
+        _db.move_task(task["id"], Status.TESTING)
+        _replace_action(task, Action.TODO)
         console.print("[bold green]PM approved developer output. Moving to testing.[/bold green]")
     else:
-        # PM rejected — save files for retry, send back to developer
         _save_context(task["id"], "previous_files", files)
         feedback = decision.get("feedback", "No specific feedback.")
         _append_feedback(task, feedback, "PM rejected developer output")
         _increment_retry(task)
-        _replace_action(task, "action:todo")
-        console.print(f"[yellow]PM rejected developer output. Retrying.[/yellow]")
+        _replace_action(task, Action.TODO)
+        console.print("[yellow]PM rejected developer output. Retrying.[/yellow]")
 
 
 def _handle_testing_todo(task: dict) -> None:
     """Run TestAgent + CIAgent. Set action:review for PM."""
+    console = config.console
     ctx = _load_context(task["id"], "developer")
     if not ctx:
         console.print("[red]No developer context for testing. Moving back to develop.[/red]")
-        _db.move_task(task["id"], "develop")
-        _replace_action(task, "action:todo")
+        _db.move_task(task["id"], Status.DEVELOP)
+        _replace_action(task, Action.TODO)
         return
 
     files = ctx["files"]
     summary = ctx.get("summary", "")
 
-    # Generate tests
     test_files = TestAgent().generate_tests(task, files) or []
     all_files = files + test_files
 
-    # Run CI (write files, tox, commit)
     ci_result = CIAgent().run(task, all_files, summary)
 
-    # Save testing context for PM review
     _save_context(task["id"], "testing", {
         "files": all_files,
         "ci_result": ci_result,
         "summary": summary,
     })
 
-    _replace_action(task, "action:review")
-    status = ci_result.get("status", "unknown")
-    console.print(f"[green]Testing done — CI status: {status}. Awaiting PM review.[/green]")
+    _replace_action(task, Action.REVIEW)
+    ci_status = ci_result.get("status", "unknown")
+    console.print(f"[green]Testing done — CI status: {ci_status}. Awaiting PM review.[/green]")
 
 
 def _handle_testing_review(task: dict) -> None:
     """PM reviews test results. Approve → done. Reject → back to develop."""
+    console = config.console
     ctx = _load_context(task["id"], "testing")
     if not ctx:
         console.print("[red]No testing context found. Resetting to action:todo.[/red]")
-        _replace_action(task, "action:todo")
+        _replace_action(task, Action.TODO)
         return
 
     files = ctx["files"]
@@ -357,28 +346,24 @@ def _handle_testing_review(task: dict) -> None:
         if ci_result.get("status") == "committed":
             _clear_context(task["id"])
             _replace_action(task, None)
-            _db.move_task(task["id"], "done")
+            _db.move_task(task["id"], Status.DONE)
             console.print(f"[bold green]✓ Task #{task['id']} done![/bold green]")
-            # Check if parent task should also complete
             if task.get("parent_task_id"):
                 _check_single_parent(task["parent_task_id"])
         else:
-            # Tests might have passed in PM's view but CI didn't commit
-            # Send back for another CI attempt
-            _db.move_task(task["id"], "develop")
+            _db.move_task(task["id"], Status.DEVELOP)
             _save_context(task["id"], "previous_files", files)
             _append_feedback(task, f"CI status: {ci_result.get('status')}. {tox_output[-500:]}", "CI did not commit")
             _increment_retry(task)
-            _replace_action(task, "action:todo")
+            _replace_action(task, Action.TODO)
             console.print("[yellow]PM approved but CI didn't commit. Back to develop.[/yellow]")
     else:
-        # PM rejected — back to develop
-        _db.move_task(task["id"], "develop")
+        _db.move_task(task["id"], Status.DEVELOP)
         _save_context(task["id"], "previous_files", [f for f in files if not f["path"].startswith("backend/tests/")])
         feedback = decision.get("feedback", "")
         _append_feedback(task, feedback, "PM rejected testing output")
         _increment_retry(task)
-        _replace_action(task, "action:todo")
+        _replace_action(task, Action.TODO)
         console.print("[yellow]PM rejected testing output. Back to develop.[/yellow]")
 
 
@@ -386,6 +371,7 @@ def _handle_testing_review(task: dict) -> None:
 
 def _check_parent_completions(all_tasks: list[dict]) -> None:
     """Check if any parent tasks should be completed (all subtasks done)."""
+    console = config.console
     parent_ids = {
         t.get("parent_task_id")
         for t in all_tasks
@@ -393,30 +379,30 @@ def _check_parent_completions(all_tasks: list[dict]) -> None:
     }
     for pid in parent_ids:
         parent = next((t for t in all_tasks if t["id"] == pid), None)
-        if parent and parent["status"] not in ("done", "failed"):
+        if parent and parent["status"] not in (Status.DONE, Status.FAILED):
             subtasks = [t for t in all_tasks if t.get("parent_task_id") == pid]
-            if subtasks and all(t["status"] == "done" for t in subtasks):
-                _db.move_task(pid, "done")
+            if subtasks and all(t["status"] == Status.DONE for t in subtasks):
+                _db.move_task(pid, Status.DONE)
                 console.print(f"[bold green]✓ Parent task #{pid} completed (all subtasks done).[/bold green]")
 
 
 def _check_single_parent(parent_task_id: int) -> None:
     """Check if a specific parent's subtasks are all done."""
     subtasks = _db.get_subtasks(parent_task_id)
-    if subtasks and all(t["status"] == "done" for t in subtasks):
-        _db.move_task(parent_task_id, "done")
-        console.print(f"[bold green]✓ Parent task #{parent_task_id} completed (all subtasks done).[/bold green]")
+    if subtasks and all(t["status"] == Status.DONE for t in subtasks):
+        _db.move_task(parent_task_id, Status.DONE)
+        config.console.print(f"[bold green]✓ Parent task #{parent_task_id} completed (all subtasks done).[/bold green]")
 
 
 # ── Label helpers ─────────────────────────────────────────────────────────────
 
 def _replace_action(task: dict, new_action: str | None) -> None:
     """Remove any existing action:* labels and optionally set a new one."""
-    labels = [l for l in task.get("labels", []) if not l.startswith("action:")]
+    labels = [l for l in task.get("labels", []) if not l.startswith(Action.PREFIX)]
     if new_action:
         labels.append(new_action)
     _db.set_labels(task["id"], labels)
-    task["labels"] = labels  # keep local copy in sync
+    task["labels"] = labels
 
 
 def _add_label(task: dict, label: str) -> None:
@@ -433,7 +419,7 @@ def _add_label(task: dict, label: str) -> None:
 def _get_retry_count(task: dict) -> int:
     """Get retry count from labels (retry:N)."""
     for label in task.get("labels", []):
-        m = re.match(r"^retry:(\d+)$", label)
+        m = re.match(rf"^{re.escape(LabelPrefix.RETRY)}(\d+)$", label)
         if m:
             return int(m.group(1))
     return 0
@@ -442,11 +428,11 @@ def _get_retry_count(task: dict) -> int:
 def _increment_retry(task: dict) -> None:
     """Increment the retry counter label."""
     count = _get_retry_count(task) + 1
-    labels = [l for l in task.get("labels", []) if not l.startswith("retry:")]
-    labels.append(f"retry:{count}")
+    labels = [l for l in task.get("labels", []) if not l.startswith(LabelPrefix.RETRY)]
+    labels.append(f"{LabelPrefix.RETRY}{count}")
     _db.set_labels(task["id"], labels)
     task["labels"] = labels
-    console.print(f"[dim]  retry count: {count}/{config.MAX_TASK_RETRIES}[/dim]")
+    config.console.print(f"[dim]  retry count: {count}/{config.MAX_TASK_RETRIES}[/dim]")
 
 
 # ── Feedback helpers ──────────────────────────────────────────────────────────

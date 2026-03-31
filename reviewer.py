@@ -1,17 +1,9 @@
 """Reviewer agent — validates generated code against the task spec."""
-import json
-import re
-
-from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.text import Text
 
 import config
-from ollama_client import OllamaClient
-
-console = Console()
+from llm import create_client, parse_json_response, stream_chat_with_display
 
 _SYSTEM_PROMPT = """/no_think
 You are a senior code reviewer for the Habr Agentic Pipeline project.
@@ -51,15 +43,14 @@ approved=false → issues must list concrete, fixable problems with file paths
 
 class ReviewerAgent:
     def __init__(self):
-        rev = config.step("reviewer")
-        self.model  = rev["model"]
-        self.client = OllamaClient(config.OLLAMA_URL, self.model)
+        self.client = create_client("reviewer")
 
     def review(self, task: dict, files: list[dict], agent_summary: str) -> dict:
         """
         Review generated files against the task spec.
         Returns {"approved": bool, "issues": list[str], "overall_comment": str}
         """
+        console = config.console
         prompt = _build_review_prompt(task, files, agent_summary)
 
         rev = config.step("reviewer")
@@ -69,27 +60,17 @@ class ReviewerAgent:
         ))
 
         try:
-            accumulated = ""
-            final_resp  = {}
-            with Live("", console=console, refresh_per_second=10, transient=True) as live:
-                for chunk, final in self.client.stream_chat(
-                    messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    temperature=0.1,
-                    timeout=240,
-                ):
-                    if final is not None:
-                        final_resp = final
-                        break
-                    accumulated += chunk
-                    # Show last line of reasoning to indicate progress
-                    last_line = accumulated.strip().splitlines()[-1] if accumulated.strip() else ""
-                    live.update(Text(f"  {last_line}", style="dimitalic"))
-
+            final_resp, _ = stream_chat_with_display(
+                self.client,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                timeout=240,
+            )
             content = final_resp.get("message", {}).get("content", "")
-            result  = _parse_json(content)
+            result = parse_json_response(content)
         except Exception as e:
             console.print(f"[red]  Reviewer error: {e}[/red]")
             result = {
@@ -102,7 +83,7 @@ class ReviewerAgent:
         return result
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _build_review_prompt(task: dict, files: list[dict], summary: str) -> str:
     lines = [
@@ -111,7 +92,7 @@ def _build_review_prompt(task: dict, files: list[dict], summary: str) -> str:
         "",
         task.get("description", "No description."),
         "",
-        f"AGENT IMPLEMENTATION SUMMARY:",
+        "AGENT IMPLEMENTATION SUMMARY:",
         summary,
         "",
         f"GENERATED FILES ({len(files)} total):",
@@ -129,33 +110,10 @@ def _build_review_prompt(task: dict, files: list[dict], summary: str) -> str:
     return "\n".join(lines)
 
 
-def _parse_json(content: str) -> dict:
-    content = content.strip()
-    # Direct parse
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        pass
-    # Extract first {...} block
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-    # Heuristic fallback
-    lower = content.lower()
-    approved = any(kw in lower for kw in ("approved", "looks good", "lgtm", "no issues"))
-    return {
-        "approved": approved,
-        "issues": [] if approved else ["Reviewer returned unparseable response"],
-        "overall_comment": content[:300],
-    }
-
-
 def _print_review(result: dict) -> None:
+    console = config.console
     console.print(Rule())
-    if result["approved"]:
+    if result.get("approved"):
         console.print(Panel(
             f"[bold green]✓ APPROVED[/bold green]\n\n{result.get('overall_comment', '')}",
             border_style="green",

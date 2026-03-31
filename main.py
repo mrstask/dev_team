@@ -15,16 +15,14 @@ Usage:
 import sys
 
 import click
-from rich.console import Console
 
 import config
 from dashboard_client import DashboardClient
+from dtypes import Action, Status
 from event_loop import run_loop
 from ollama_client import OllamaClient
 from orchestrator import show_board
 from roles import ROLES
-
-console = Console()
 
 
 @click.group(invoke_without_command=True)
@@ -60,16 +58,16 @@ def kick_cmd(task_id: int) -> None:
     db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
     task = db.get_task(task_id)
 
-    if task["status"] != "backlog":
-        console.print(f"[yellow]Task #{task_id} is in '{task['status']}', not backlog. Skipping.[/yellow]")
+    if task["status"] != Status.BACKLOG:
+        config.console.print(f"[yellow]Task #{task_id} is in '{task['status']}', not backlog. Skipping.[/yellow]")
         return
 
-    db.move_task(task_id, "architect")
+    db.move_task(task_id, Status.ARCHITECT)
     labels = list(task.get("labels", []))
-    if "action:todo" not in labels:
-        labels.append("action:todo")
+    if Action.TODO not in labels:
+        labels.append(Action.TODO)
     db.set_labels(task_id, labels)
-    console.print(f"[green]Task #{task_id} moved to architect + action:todo.[/green]")
+    config.console.print(f"[green]Task #{task_id} moved to architect + action:todo.[/green]")
 
 
 @cli.command("status")
@@ -97,9 +95,9 @@ def status_cmd() -> None:
         elif s["backend"] == "claude-code":
             status = "[green]local CLI[/green]"
         tbl.add_row(name, f"[{color}]{s['backend']}[/{color}]", s["model"], status)
-    console.print(tbl)
+    config.console.print(tbl)
 
-    console.print()
+    config.console.print()
     try:
         d = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
         tasks = d.get_tasks()
@@ -107,11 +105,11 @@ def status_cmd() -> None:
         for t in tasks:
             by_s[t["status"]] = by_s.get(t["status"], 0) + 1
         total = sum(by_s.values())
-        console.print(f"Dashboard ({config.DASHBOARD_URL})  [green]OK[/green]  ({total} tasks in HAP)")
+        config.console.print(f"Dashboard ({config.DASHBOARD_URL})  [green]OK[/green]  ({total} tasks in HAP)")
         for s, n in sorted(by_s.items()):
-            console.print(f"  {s}: {n}")
+            config.console.print(f"  {s}: {n}")
     except Exception as e:
-        console.print(f"Dashboard: [red]ERROR — {e}[/red]")
+        config.console.print(f"Dashboard: [red]ERROR — {e}[/red]")
 
 
 # ── Guards ────────────────────────────────────────────────────────────────────
@@ -122,17 +120,17 @@ def _ensure_backends() -> None:
     if ollama_steps:
         client = OllamaClient(config.OLLAMA_URL, next(iter(ollama_steps.values()))["model"])
         if not client.is_alive():
-            console.print("[red]Ollama is offline.  Start it:[/red]  ollama serve")
+            config.console.print("[red]Ollama is offline.  Start it:[/red]  ollama serve")
             sys.exit(1)
         missing = [s["model"] for s in ollama_steps.values() if not client.is_model_available(s["model"])]
         if missing:
             pulls = "\n".join(f"  ollama pull {m}" for m in missing)
-            console.print(f"[yellow]Models not pulled — run:[/yellow]\n{pulls}")
+            config.console.print(f"[yellow]Models not pulled — run:[/yellow]\n{pulls}")
             sys.exit(1)
 
     openrouter_steps = {name: s for name, s in config.STEPS.items() if s["backend"] == "openrouter"}
     if openrouter_steps and not config.OPENROUTER_API_KEY:
-        console.print("[red]OPENROUTER_API_KEY not set. Add it to habr-agentic/.env[/red]")
+        config.console.print("[red]OPENROUTER_API_KEY not set. Add it to habr-agentic/.env[/red]")
         sys.exit(1)
 
 
@@ -141,9 +139,9 @@ def _sync_agents() -> None:
     try:
         d = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
         d.sync_agents(ROLES)
-        console.print("[dim]Synced agents to dashboard.[/dim]")
+        config.console.print("[dim]Synced agents to dashboard.[/dim]")
     except Exception as e:
-        console.print(f"[yellow]Failed to sync agents to dashboard: {e}[/yellow]")
+        config.console.print(f"[yellow]Failed to sync agents to dashboard: {e}[/yellow]")
 
 
 if __name__ == "__main__":

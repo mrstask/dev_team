@@ -2,16 +2,13 @@
 import subprocess
 from pathlib import Path
 
-from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
 import config
-from ollama_client import OllamaClient
-
-console = Console()
+from llm import create_client
 
 _COMMIT_SYSTEM = """/no_think
 You are a git commit message author.
@@ -28,9 +25,7 @@ Respond with ONLY the commit message string, nothing else.
 
 class CIAgent:
     def __init__(self):
-        ci = config.step("ci")
-        self.model  = ci["model"]
-        self.client = OllamaClient(config.OLLAMA_URL, self.model)
+        self.client = create_client("ci")
 
     def run(self, task: dict, files: list[dict], summary: str) -> dict:
         """
@@ -40,7 +35,7 @@ class CIAgent:
         4. If red    → return {"status": "failed", "output": last N lines}
         """
         ci = config.step("ci")
-        console.print(Rule(
+        config.console.print(Rule(
             f"[bold]CI Agent[/bold]  ·  {ci['backend']}  ·  {ci['model']}  ·  {len(files)} file(s)",
             style="green",
         ))
@@ -52,10 +47,10 @@ class CIAgent:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(f["content"], encoding="utf-8")
             written.append(p)
-            console.print(f"  [green]wrote[/green] {f['path']}")
+            config.console.print(f"  [green]wrote[/green] {f['path']}")
 
         # ── 2. Run tox ────────────────────────────────────────────────────────
-        console.print("\n[dim]  Running tox ...[/dim]")
+        config.console.print("\n[dim]  Running tox ...[/dim]")
         tox_output = ""
         try:
             process = subprocess.Popen(
@@ -67,7 +62,7 @@ class CIAgent:
                 bufsize=1,
             )
             
-            with Live("", console=console, refresh_per_second=4, transient=True) as live:
+            with Live("", console=config.console, refresh_per_second=4, transient=True) as live:
                 while True:
                     line = process.stdout.readline()
                     if not line and process.poll() is not None:
@@ -79,13 +74,13 @@ class CIAgent:
             process.wait(timeout=300)
             returncode = process.returncode
         except Exception as e:
-            console.print(f"[red]  tox execution failed: {e}[/red]")
+            config.console.print(f"[red]  tox execution failed: {e}[/red]")
             return {"status": "failed", "output": str(e)}
 
         last_lines = "\n".join(tox_output.splitlines()[-40:])
 
         if returncode != 0:
-            console.print(Panel(last_lines, title="[red]tox FAILED[/red]", border_style="red"))
+            config.console.print(Panel(last_lines, title="[red]tox FAILED[/red]", border_style="red"))
             # Roll back written files so workspace stays clean
             for p in written:
                 try:
@@ -94,11 +89,11 @@ class CIAgent:
                     pass
             return {"status": "failed", "output": last_lines}
 
-        console.print(Panel(last_lines, title="[green]tox PASSED[/green]", border_style="green"))
+        config.console.print(Panel(last_lines, title="[green]tox PASSED[/green]", border_style="green"))
 
         # ── 3. Commit ─────────────────────────────────────────────────────────
         commit_msg = self._generate_commit_message(task, files, summary)
-        console.print(f"[dim]  Commit message: {commit_msg}[/dim]")
+        config.console.print(f"[dim]  Commit message: {commit_msg}[/dim]")
 
         rel_paths = [str(p.relative_to(config.ROOT)) for p in written]
         subprocess.run(["git", "add", "--"] + rel_paths, cwd=str(config.ROOT), check=True)
@@ -110,11 +105,11 @@ class CIAgent:
             text=True,
         )
         if commit_result.returncode != 0:
-            console.print(f"[red]  git commit failed: {commit_result.stderr}[/red]")
+            config.console.print(f"[red]  git commit failed: {commit_result.stderr}[/red]")
             return {"status": "commit_failed", "output": commit_result.stderr}
 
         sha = _get_head_sha(config.ROOT)
-        console.print(f"[bold green]  ✓ Committed {sha[:8]}: {commit_msg}[/bold green]")
+        config.console.print(f"[bold green]  ✓ Committed {sha[:8]}: {commit_msg}[/bold green]")
         return {"status": "committed", "sha": sha, "commit_message": commit_msg}
 
     # ── Helpers ───────────────────────────────────────────────────────────────

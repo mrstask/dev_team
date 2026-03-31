@@ -21,14 +21,11 @@ from claude_agent_sdk import (
     ToolUseBlock,
     query,
 )
-from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 
 import config
 from roles import ROLES
-
-console = Console()
 
 # Staging dir — agent writes here; PM reviews; CI agent writes to real paths
 STAGING_DIR: Path = config.ROOT / "dev_team" / "_staging"
@@ -63,7 +60,7 @@ class ClaudeAgent:
         skeleton_files: list[dict] | None = None,
     ) -> dict | None:
         arch = config.step("architect")
-        console.print(Rule(
+        config.console.print(Rule(
             f"[bold]{self.role_def['name']}[/bold]  ·  {arch['backend']}  ·  {arch['model']}",
             style="magenta",
         ))
@@ -100,22 +97,22 @@ class ClaudeAgent:
                             # Stream Claude's thinking text line by line
                             for line in block.text.strip().splitlines():
                                 if line.strip():
-                                    console.print(f"  [dim]{line}[/dim]")
+                                    config.console.print(f"  [dim]{line}[/dim]")
                         elif isinstance(block, ToolUseBlock):
                             name = block.name
                             inp  = block.input or {}
                             arg  = next(iter(inp.values()), "") if inp else ""
                             arg_str = repr(arg)[:60] if isinstance(arg, str) else "..."
-                            console.print(f"  [green]⚙[/green] [bold]{name}[/bold]({arg_str})")
+                            config.console.print(f"  [green]⚙[/green] [bold]{name}[/bold]({arg_str})")
                 elif isinstance(message, SystemMessage):
                     if getattr(message, "subtype", None) == "init":
                         sid = getattr(message, "session_id", None) or getattr(getattr(message, "data", None), "get", lambda k, d=None: d)("session_id")
                         if sid:
-                            console.print(f"  [dim]session {sid}[/dim]")
+                            config.console.print(f"  [dim]session {sid}[/dim]")
                 elif isinstance(message, ResultMessage):
                     summary_parts.append(message.result or "")
         except Exception as exc:
-            console.print(f"[red]Claude agent error: {exc}[/red]")
+            config.console.print(f"[red]Claude agent error: {exc}[/red]")
             shutil.rmtree(STAGING_DIR, ignore_errors=True)
             return None
 
@@ -134,20 +131,20 @@ class ClaudeAgent:
         shutil.rmtree(STAGING_DIR, ignore_errors=True)
 
         if not files:
-            console.print("[red]Architect wrote no files to staging.[/red]")
+            config.console.print("[red]Architect wrote no files to staging.[/red]")
             return None
 
         summary = "\n".join(summary_parts).strip() or f"Produced {len(files)} skeleton file(s)."
-        console.print(Panel(f"[bold]Architect summary:[/bold]\n{summary}", border_style="magenta"))
-        console.print(f"[bold]{len(files)} skeleton file(s) staged.[/bold]")
+        config.console.print(Panel(f"[bold]Architect summary:[/bold]\n{summary}", border_style="magenta"))
+        config.console.print(f"[bold]{len(files)} skeleton file(s) staged.[/bold]")
         for f in files:
-            console.print(f"  [cyan]{f['path']}[/cyan]  ({len(f['content'])} chars)")
+            config.console.print(f"  [cyan]{f['path']}[/cyan]  ({len(f['content'])} chars)")
 
         subtasks = self._extract_subtasks(summary, task, files)
         if subtasks:
-            console.print(f"[bold]{len(subtasks)} subtask(s) proposed.[/bold]")
+            config.console.print(f"[bold]{len(subtasks)} subtask(s) proposed.[/bold]")
             for i, st in enumerate(subtasks):
-                console.print(f"  [{i}] [cyan]{st['title']}[/cyan]")
+                config.console.print(f"  [{i}] [cyan]{st['title']}[/cyan]")
 
         return {
             "status": "pending_review",

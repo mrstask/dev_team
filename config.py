@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from rich.console import Console
 
 # Load .env from the project root (habr-agentic/.env)
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
@@ -48,8 +49,8 @@ OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 DASHBOARD_URL        = "http://localhost:8000/api"
 DASHBOARD_PROJECT_ID = 3   # HAP — Habr Agentic Pipeline
 
-# ── Task Statuses ─────────────────────────────────────────────────────────
-STATUSES = ["backlog", "architect", "develop", "testing", "done", "failed"]
+# ── Shared Console ────────────────────────────────────────────────────────
+console = Console()
 
 # ── Agent Behaviour ────────────────────────────────────────────────────────────
 MAX_TOOL_ROUNDS = 25       # Max ReAct rounds before giving up
