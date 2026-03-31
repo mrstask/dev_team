@@ -11,20 +11,11 @@ import re
 import shutil
 from pathlib import Path
 
-import anyio
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    SystemMessage,
-    TextBlock,
-    ToolUseBlock,
-    query,
-)
 from rich.panel import Panel
 from rich.rule import Rule
 
 import config
+from clients.claude_client import ClaudeClient
 from core import ROLES
 from prompts import STAGING_INSTRUCTION
 
@@ -41,6 +32,7 @@ class ClaudeAgent:
         # Strip /no_think — Qwen3-only directive
         system = self.role_def["system_prompt"]
         self.system_prompt = system.lstrip("/no_think").strip() + STAGING_INSTRUCTION
+        self.client = ClaudeClient(console=config.console)
 
     def run(
         self,
@@ -53,53 +45,23 @@ class ClaudeAgent:
             f"[bold]{self.role_def['name']}[/bold]  ·  {arch['backend']}  ·  {arch['model']}",
             style="magenta",
         ))
-        return anyio.run(self._run_async, task, feedback, skeleton_files)
 
-    async def _run_async(
-        self,
-        task: dict,
-        feedback: str,
-        skeleton_files: list[dict] | None,
-    ) -> dict | None:
         # Clear and recreate staging dir
         if STAGING_DIR.exists():
             shutil.rmtree(STAGING_DIR)
         STAGING_DIR.mkdir(parents=True)
 
         prompt = self._build_prompt(task, feedback, skeleton_files)
-        summary_parts: list[str] = []
-
-        options = ClaudeAgentOptions(
-            cwd=str(config.ROOT),
-            allowed_tools=["Read", "Glob", "Grep", "Write"],
-            permission_mode="bypassPermissions",
-            system_prompt=self.system_prompt,
-            model=config.step("architect")["model"],
-            max_turns=40,
-        )
 
         try:
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock) and block.text.strip():
-                            # Stream Claude's thinking text line by line
-                            for line in block.text.strip().splitlines():
-                                if line.strip():
-                                    config.console.print(f"  [dim]{line}[/dim]")
-                        elif isinstance(block, ToolUseBlock):
-                            name = block.name
-                            inp  = block.input or {}
-                            arg  = next(iter(inp.values()), "") if inp else ""
-                            arg_str = repr(arg)[:60] if isinstance(arg, str) else "..."
-                            config.console.print(f"  [green]⚙[/green] [bold]{name}[/bold]({arg_str})")
-                elif isinstance(message, SystemMessage):
-                    if getattr(message, "subtype", None) == "init":
-                        sid = getattr(message, "session_id", None) or getattr(getattr(message, "data", None), "get", lambda k, d=None: d)("session_id")
-                        if sid:
-                            config.console.print(f"  [dim]session {sid}[/dim]")
-                elif isinstance(message, ResultMessage):
-                    summary_parts.append(message.result or "")
+            response = self.client.run(
+                prompt,
+                system_prompt=self.system_prompt,
+                model=arch["model"],
+                cwd=str(config.ROOT),
+                allowed_tools=["Read", "Glob", "Grep", "Write"],
+                max_turns=40,
+            )
         except Exception as exc:
             config.console.print(f"[red]Claude agent error: {exc}[/red]")
             shutil.rmtree(STAGING_DIR, ignore_errors=True)
@@ -123,7 +85,7 @@ class ClaudeAgent:
             config.console.print("[red]Architect wrote no files to staging.[/red]")
             return None
 
-        summary = "\n".join(summary_parts).strip() or f"Produced {len(files)} skeleton file(s)."
+        summary = response.summary or f"Produced {len(files)} skeleton file(s)."
         config.console.print(Panel(f"[bold]Architect summary:[/bold]\n{summary}", border_style="magenta"))
         config.console.print(f"[bold]{len(files)} skeleton file(s) staged.[/bold]")
         for f in files:
