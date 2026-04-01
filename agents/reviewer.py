@@ -5,7 +5,7 @@ from rich.rule import Rule
 import config
 from core import create_client, parse_json_response, stream_chat_with_display
 from dtypes import ReviewResult
-from prompts import REVIEWER_SYSTEM_PROMPT
+from prompts import REVIEWER_SYSTEM_PROMPT, REVIEWER_USER_PROMPT_HEADER
 
 
 class ReviewerAgent:
@@ -44,18 +44,12 @@ class ReviewerAgent:
 
     @staticmethod
     def _build_review_prompt(task: dict, files: list[dict], summary: str) -> str:
-        lines = [
-            "TASK SPECIFICATION:",
-            f"Title: {task['title']}",
-            "",
-            task.get("description", "No description."),
-            "",
-            "AGENT IMPLEMENTATION SUMMARY:",
-            summary,
-            "",
-            f"GENERATED FILES ({len(files)} total):",
-            "",
-        ]
+        lines = [REVIEWER_USER_PROMPT_HEADER.format(
+            title=task["title"],
+            description=task.get("description", "No description."),
+            summary=summary,
+            count=len(files),
+        )]
         for f in files:
             lines.append(f"=== {f['path']} ===")
             content = f["content"]

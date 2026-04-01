@@ -1,3 +1,46 @@
+PM_ARCHITECT_USER_PROMPT = (
+    "TASK SPECIFICATION:\n"
+    "Title: {title}\n"
+    "Priority: {priority}\n"
+    "\n"
+    "{description}\n"
+    "\n"
+    "ARCHITECT SUMMARY:\n"
+    "{summary}\n"
+    "\n"
+    "SKELETON FILES ({count}):\n"
+)
+
+PM_ARCHITECT_SUBTASKS_HEADER = "PROPOSED SUBTASKS ({count}):"
+
+PM_DEVELOPER_USER_PROMPT = (
+    "TASK SPECIFICATION:\n"
+    "Title: {title}\n"
+    "Priority: {priority}\n"
+    "\n"
+    "{description}\n"
+    "\n"
+    "DEVELOPER SUMMARY:\n"
+    "{summary}\n"
+    "\n"
+    "IMPLEMENTATION FILES ({count}):\n"
+)
+
+PM_TESTING_USER_PROMPT = (
+    "TASK SPECIFICATION:\n"
+    "Title: {title}\n"
+    "\n"
+    "{description}\n"
+    "\n"
+    "CI SUMMARY:\n"
+    "{summary}\n"
+    "\n"
+    "TOX OUTPUT (last 80 lines):\n"
+    "{tox_output}\n"
+    "\n"
+    "FILES ({count}):\n"
+)
+
 PM_ARCHITECT_REVIEW = """\
 You are the autonomous Project Manager for the dev team.
 

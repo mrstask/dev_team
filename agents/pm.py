@@ -5,7 +5,15 @@ from rich.rule import Rule
 import config
 from core import create_client, parse_json_response, stream_chat_with_display
 from dtypes import ReviewResult
-from prompts import PM_ARCHITECT_REVIEW, PM_DEVELOPER_REVIEW, PM_TESTING_REVIEW
+from prompts import (
+    PM_ARCHITECT_REVIEW,
+    PM_ARCHITECT_SUBTASKS_HEADER,
+    PM_ARCHITECT_USER_PROMPT,
+    PM_DEVELOPER_REVIEW,
+    PM_DEVELOPER_USER_PROMPT,
+    PM_TESTING_REVIEW,
+    PM_TESTING_USER_PROMPT,
+)
 
 
 class PMAgent:
@@ -78,19 +86,13 @@ class PMAgent:
     def _build_architect_prompt(
         task: dict, files: list[dict], subtasks: list[dict], summary: str,
     ) -> str:
-        lines = [
-            "TASK SPECIFICATION:",
-            f"Title: {task['title']}",
-            f"Priority: {task['priority']}",
-            "",
-            task.get("description", "No description."),
-            "",
-            "ARCHITECT SUMMARY:",
-            summary,
-            "",
-            f"SKELETON FILES ({len(files)}):",
-            "",
-        ]
+        lines = [PM_ARCHITECT_USER_PROMPT.format(
+            title=task["title"],
+            priority=task["priority"],
+            description=task.get("description", "No description."),
+            summary=summary,
+            count=len(files),
+        )]
         for f in files:
             lines.append(f"=== {f['path']} ===")
             content = f["content"]
@@ -102,7 +104,7 @@ class PMAgent:
             lines.append("")
 
         if subtasks:
-            lines.append(f"PROPOSED SUBTASKS ({len(subtasks)}):")
+            lines.append(PM_ARCHITECT_SUBTASKS_HEADER.format(count=len(subtasks)))
             lines.append("")
             for i, st in enumerate(subtasks):
                 lines.append(f"  [{i}] {st['title']}")
@@ -115,19 +117,13 @@ class PMAgent:
     def _build_developer_prompt(
         task: dict, files: list[dict], summary: str,
     ) -> str:
-        lines = [
-            "TASK SPECIFICATION:",
-            f"Title: {task['title']}",
-            f"Priority: {task['priority']}",
-            "",
-            task.get("description", "No description."),
-            "",
-            "DEVELOPER SUMMARY:",
-            summary,
-            "",
-            f"IMPLEMENTATION FILES ({len(files)}):",
-            "",
-        ]
+        lines = [PM_DEVELOPER_USER_PROMPT.format(
+            title=task["title"],
+            priority=task["priority"],
+            description=task.get("description", "No description."),
+            summary=summary,
+            count=len(files),
+        )]
         for f in files:
             lines.append(f"=== {f['path']} ===")
             content = f["content"]
@@ -143,21 +139,14 @@ class PMAgent:
     def _build_testing_prompt(
         task: dict, files: list[dict], tox_output: str, summary: str,
     ) -> str:
-        lines = [
-            "TASK SPECIFICATION:",
-            f"Title: {task['title']}",
-            "",
-            task.get("description", "No description."),
-            "",
-            "CI SUMMARY:",
-            summary,
-            "",
-            "TOX OUTPUT (last 80 lines):",
-            "\n".join(tox_output.strip().splitlines()[-80:]) if tox_output else "(no output)",
-            "",
-            f"FILES ({len(files)}):",
-            "",
-        ]
+        tox_lines = "\n".join(tox_output.strip().splitlines()[-80:]) if tox_output else "(no output)"
+        lines = [PM_TESTING_USER_PROMPT.format(
+            title=task["title"],
+            description=task.get("description", "No description."),
+            summary=summary,
+            tox_output=tox_lines,
+            count=len(files),
+        )]
         for f in files:
             lines.append(f"  - {f['path']}  ({len(f['content'])} chars)")
         return "\n".join(lines)

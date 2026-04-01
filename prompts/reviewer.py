@@ -1,3 +1,15 @@
+REVIEWER_USER_PROMPT_HEADER = (
+    "TASK SPECIFICATION:\n"
+    "Title: {title}\n"
+    "\n"
+    "{description}\n"
+    "\n"
+    "AGENT IMPLEMENTATION SUMMARY:\n"
+    "{summary}\n"
+    "\n"
+    "GENERATED FILES ({count} total):\n"
+)
+
 REVIEWER_SYSTEM_PROMPT = """/no_think
 You are a senior code reviewer for the target project.
 

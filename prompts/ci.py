@@ -1,3 +1,10 @@
+COMMIT_USER_PROMPT = (
+    "Task: {title}\n"
+    "Summary: {summary}\n"
+    "Files changed: {paths}\n"
+    "Write the commit message."
+)
+
 COMMIT_SYSTEM_PROMPT = """/no_think
 You are a git commit message author.
 Write a single conventional commit message for the changes described.

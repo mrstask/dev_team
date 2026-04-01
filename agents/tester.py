@@ -4,7 +4,7 @@ from rich.panel import Panel
 import config
 from core import create_client, run_react_loop
 from dtypes import FileContent, TestResult
-from prompts import TESTER_AGENT_SYSTEM_PROMPT
+from prompts import TESTER_AGENT_SYSTEM_PROMPT, TESTER_USER_PROMPT_FOOTER, TESTER_USER_PROMPT_HEADER
 
 
 class TestAgent:
@@ -50,13 +50,7 @@ class TestAgent:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _build_test_prompt(task: dict, py_files: list[dict]) -> str:
-    lines = [
-        f"Write pytest unit tests for the following implementation.",
-        f"Task: {task['title']}",
-        "",
-        f"Implementation files ({len(py_files)}):",
-        "",
-    ]
+    lines = [TESTER_USER_PROMPT_HEADER.format(title=task["title"], count=len(py_files))]
     for f in py_files:
         lines.append(f"=== {f['path']} ===")
         content = f["content"]
@@ -65,15 +59,7 @@ def _build_test_prompt(task: dict, py_files: list[dict]) -> str:
         else:
             lines.append(content)
         lines.append("")
-    lines += [
-        "Requirements:",
-        "- One test file per implementation module",
-        "- File paths: backend/tests/test_<module_name>.py",
-        "- Use pytest, pytest-asyncio for async, in-memory SQLite for DB tests",
-        "- Mock all external I/O (HTTP, file system, env vars where needed)",
-        "- Test all enum values, model fields, schema validation, and key logic",
-        "- Call write_files with all test files when done",
-    ]
+    lines.append(TESTER_USER_PROMPT_FOOTER)
     return "\n".join(lines)
 
 

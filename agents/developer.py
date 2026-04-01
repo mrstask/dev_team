@@ -2,6 +2,13 @@
 import config
 from core import ROLES, create_client, run_react_loop
 from dtypes import DeveloperResult, FileContent
+from prompts.developer import (
+    DEVELOPER_FEEDBACK_PROMPT,
+    DEVELOPER_PREVIOUS_FILES_HEADER,
+    DEVELOPER_SKELETON_FOOTER,
+    DEVELOPER_SKELETON_HEADER,
+    DEVELOPER_TASK_PROMPT,
+)
 
 
 class DevAgent:
@@ -47,29 +54,21 @@ class DevAgent:
         previous_files: list[dict] | None = None,
     ) -> str:
         labels = ", ".join(task.get("labels", []))
-        prompt = (
-            f"Task: {task['title']}\n"
-            f"Priority: {task['priority']}\n"
-            f"Labels: {labels}\n\n"
-            f"Description:\n{task.get('description', 'No description.')}\n\n"
-            "Instructions:\n"
-            "1. Use read_file / list_files / search_code to gather context if needed.\n"
-            "2. Implement the task completely and correctly.\n"
-            "3. Call write_files with ALL created/modified files and a summary.\n"
+        prompt = DEVELOPER_TASK_PROMPT.format(
+            title=task["title"],
+            priority=task["priority"],
+            labels=labels,
+            description=task.get("description", "No description."),
         )
         if skeleton_files:
-            prompt += f"\nSkeleton files from Architect ({len(skeleton_files)} files):\n"
+            prompt += DEVELOPER_SKELETON_HEADER.format(count=len(skeleton_files))
             for f in skeleton_files:
                 prompt += f"\n=== {f['path']} ===\n{f['content']}\n"
-            prompt += "\nImplement every TODO in the skeleton files above. Return complete files.\n"
+            prompt += DEVELOPER_SKELETON_FOOTER
         if previous_files:
-            prompt += (
-                f"\nYour previous attempt produced {len(previous_files)} file(s). "
-                "They are included below — do NOT re-read them from disk, use these versions as your starting point. "
-                "Fix only what the reviewer flagged; keep everything else intact:\n"
-            )
+            prompt += DEVELOPER_PREVIOUS_FILES_HEADER.format(count=len(previous_files))
             for f in previous_files:
                 prompt += f"\n=== {f['path']} ===\n{f['content']}\n"
         if feedback:
-            prompt += f"\nReviewer feedback to address:\n{feedback}\n"
+            prompt += DEVELOPER_FEEDBACK_PROMPT.format(feedback=feedback)
         return prompt

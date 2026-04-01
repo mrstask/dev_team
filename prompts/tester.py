@@ -1,5 +1,22 @@
 """Tester prompts — role system prompt (used by DevAgent via ROLES) and agent system prompt (used by TestAgent)."""
 
+TESTER_USER_PROMPT_HEADER = (
+    "Write pytest unit tests for the following implementation.\n"
+    "Task: {title}\n"
+    "\n"
+    "Implementation files ({count}):\n"
+)
+
+TESTER_USER_PROMPT_FOOTER = (
+    "Requirements:\n"
+    "- One test file per implementation module\n"
+    "- File paths: backend/tests/test_<module_name>.py\n"
+    "- Use pytest, pytest-asyncio for async, in-memory SQLite for DB tests\n"
+    "- Mock all external I/O (HTTP, file system, env vars where needed)\n"
+    "- Test all enum values, model fields, schema validation, and key logic\n"
+    "- Call write_files with all test files when done"
+)
+
 TESTER_ROLE_SYSTEM_PROMPT = """/no_think
 You are a senior Python test engineer for the target project.
 

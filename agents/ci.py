@@ -9,7 +9,7 @@ from rich.text import Text
 import config
 from core import create_client
 from dtypes import CIResult
-from prompts import COMMIT_SYSTEM_PROMPT
+from prompts import COMMIT_SYSTEM_PROMPT, COMMIT_USER_PROMPT
 
 
 class CIAgent:
@@ -105,11 +105,10 @@ class CIAgent:
         if len(files) > 8:
             paths += f" (+{len(files) - 8} more)"
 
-        prompt = (
-            f"Task: {task['title']}\n"
-            f"Summary: {summary}\n"
-            f"Files changed: {paths}\n"
-            "Write the commit message."
+        prompt = COMMIT_USER_PROMPT.format(
+            title=task["title"],
+            summary=summary,
+            paths=paths,
         )
         try:
             resp = self.client.chat(
