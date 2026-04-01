@@ -15,9 +15,9 @@ from rich.panel import Panel
 
 import config
 from clients.claude_client import ClaudeClient
-from core import ROLES
-from dtypes import ArchitectResult, FileContent, SubtaskProposal
-from prompts import ARCHITECT_USER_PROMPT, STAGING_INSTRUCTION
+from core import ROLES, create_client, parse_json_response, stream_chat_with_display
+from dtypes import ArchitectResult, FileContent, ReviewResult, SubtaskProposal
+from prompts import ARCHITECT_USER_PROMPT, REVIEWER_USER_PROMPT_HEADER, STAGING_INSTRUCTION
 
 # Staging dir — agent writes here; PM reviews; CI agent writes to real paths
 STAGING_DIR: Path = config.ROOT / "dev_team" / "_staging"
@@ -130,6 +130,47 @@ class ClaudeAgent:
             )]
 
         return subtasks
+
+    def run_dev_review(self, task: dict, files: list[dict], agent_summary: str) -> ReviewResult:
+        """Code review of developer output against the task spec (architect:dev-review role)."""
+        role_def = ROLES["architect:dev-review"]
+        config.print_agent_rule(role_def["name"], role_def["step"])
+
+        prompt = REVIEWER_USER_PROMPT_HEADER.format(
+            title=task["title"],
+            description=task.get("description", "No description."),
+            summary=agent_summary,
+            count=len(files),
+        )
+        for f in files:
+            prompt += f"=== {f['path']} ===\n"
+            content = f["content"]
+            if len(content) > 4000:
+                prompt += content[:4000] + f"\n[... {len(content) - 4000} chars truncated ...]\n"
+            else:
+                prompt += content + "\n"
+            prompt += "\n"
+
+        client = create_client(role_def["step"])
+        try:
+            final_resp, _ = stream_chat_with_display(
+                client,
+                messages=[
+                    {"role": "system", "content": role_def["system_prompt"]},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                timeout=240,
+            )
+            content = final_resp.get("message", {}).get("content", "")
+            return ReviewResult(**parse_json_response(content))
+        except Exception as e:
+            config.console.print(f"[red]  Architect dev-review error: {e}[/red]")
+            return ReviewResult(
+                approved=False,
+                issues=[f"Review failed with exception: {e}"],
+                overall_comment="Review could not complete.",
+            )
 
     @staticmethod
     def _build_prompt(task: dict, feedback: str, skeleton_files: list[dict] | None) -> str:

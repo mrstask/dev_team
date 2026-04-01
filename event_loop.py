@@ -23,7 +23,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
-from agents import CIAgent, ClaudeAgent, DevAgent, PMAgent, ReviewerAgent, TestAgent
+from agents import ClaudeAgent, DevAgent, PMAgent, TestAgent
 from clients import DashboardClient
 from core import get_role_for_task
 from dtypes import Action, LabelPrefix, Status
@@ -285,7 +285,7 @@ def _handle_develop_review(task: dict) -> None:
     files = ctx["files"]
     summary = ctx.get("summary", "")
 
-    reviewer_result = ReviewerAgent().run(task, files, summary)
+    reviewer_result = ClaudeAgent("architect:dev-review").run_dev_review(task, files, summary)
 
     if not reviewer_result.approved:
         _save_context(task["id"], "previous_files", files)
@@ -341,7 +341,7 @@ def _handle_testing_todo(task: dict) -> None:
     test_result = TestAgent().run(task, files)
     all_files = files + [f.model_dump() for f in test_result.files]
 
-    ci_result = CIAgent().run(task, all_files, summary)
+    ci_result = TestAgent().run_ci(task, all_files, summary)
 
     _save_context(task["id"], "testing", {
         "files": all_files,

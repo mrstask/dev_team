@@ -1,68 +1,91 @@
-"""Agent role definitions — name, description, system prompt for each dev agent."""
+"""Agent role definitions — namespaced by agent: pm, architect, developer, tester."""
 import config
 from prompts import (
+    ARCHITECT_DEV_REVIEW_SYSTEM_PROMPT,
     ARCHITECT_SYSTEM_PROMPT,
-    DASHBOARD_BUILDER_SYSTEM_PROMPT,
     DEVELOPER_SYSTEM_PROMPT,
-    ETL_PORTER_SYSTEM_PROMPT,
-    PIPELINE_BUILDER_SYSTEM_PROMPT,
-    REVIEW_ENGINE_SYSTEM_PROMPT,
-    TESTER_ROLE_SYSTEM_PROMPT,
-    VISION_EMBEDDING_SYSTEM_PROMPT,
+    PM_ARCHITECT_REVIEW,
+    PM_DEVELOPER_REVIEW,
+    PM_TESTING_REVIEW,
+    PM_USER_STORY_SYSTEM_PROMPT,
+    TESTER_AGENT_SYSTEM_PROMPT,
+    TESTER_CI_SYSTEM_PROMPT,
+    TESTER_INTEGRATION_SYSTEM_PROMPT,
 )
 
 ROLES: dict[str, dict] = {
-    "architect": {
-        "name": "Architect",
-        "description": "Produces skeleton files — typed signatures, docstrings, TODO comments. No implementation.",
+    # ── PM ────────────────────────────────────────────────────────────────────
+    "pm:user-story": {
+        "name": "PM — User Story",
+        "description": "Create structured user stories from raw requirements",
+        "system_prompt": PM_USER_STORY_SYSTEM_PROMPT,
+        "step": "pm",
+    },
+    "pm:architect-review": {
+        "name": "PM — Architect Review",
+        "description": "Strategic review of skeleton files and subtask proposals",
+        "system_prompt": PM_ARCHITECT_REVIEW,
+        "step": "pm",
+    },
+    "pm:dev-review": {
+        "name": "PM — Dev Review",
+        "description": "Strategic review of developer implementation from project perspective",
+        "system_prompt": PM_DEVELOPER_REVIEW,
+        "step": "pm",
+    },
+    "pm:testing-review": {
+        "name": "PM — Testing Review",
+        "description": "Final review of testing and CI results before marking a task done",
+        "system_prompt": PM_TESTING_REVIEW,
+        "step": "pm",
+    },
+
+    # ── Architect ─────────────────────────────────────────────────────────────
+    "architect:design": {
+        "name": "Architect — Design",
+        "description": "Produce skeleton files with typed signatures, docstrings, and TODOs",
         "system_prompt": ARCHITECT_SYSTEM_PROMPT,
+        "step": "architect",
+    },
+    "architect:dev-review": {
+        "name": "Architect — Dev Review",
+        "description": "Code review of developer implementation against task specification",
+        "system_prompt": ARCHITECT_DEV_REVIEW_SYSTEM_PROMPT,
+        "step": "reviewer",
     },
 
-    "developer": {
-        "name": "Developer",
-        "description": "Implements skeleton files produced by the Architect",
+    # ── Developer ─────────────────────────────────────────────────────────────
+    "developer:implement": {
+        "name": "Developer — Implement",
+        "description": "Implement skeleton files produced by the Architect",
         "system_prompt": DEVELOPER_SYSTEM_PROMPT,
+        "step": "developer",
+    },
+    "developer:review": {
+        "name": "Developer — Review",
+        "description": "Self-review of implementation quality and correctness",
+        "system_prompt": "",  # TODO: implement
+        "step": "developer",
     },
 
-    "etl_porter": {
-        "name": "ETL Porter",
-        "description": "Port ETL services from source project — async rewrite, new model interfaces",
-        "system_prompt": ETL_PORTER_SYSTEM_PROMPT,
+    # ── Tester ────────────────────────────────────────────────────────────────
+    "tester:unit-tests": {
+        "name": "Tester — Unit Tests",
+        "description": "Write pytest unit tests for backend Python modules",
+        "system_prompt": TESTER_AGENT_SYSTEM_PROMPT,
+        "step": "tester",
     },
-
-    "pipeline_builder": {
-        "name": "Pipeline Builder",
-        "description": "LangGraph StateGraph — nodes, edges, state, scheduling, graph compilation",
-        "system_prompt": PIPELINE_BUILDER_SYSTEM_PROMPT,
+    "tester:integration-tests": {
+        "name": "Tester — Integration Tests",
+        "description": "Write pytest integration tests covering cross-module behaviour",
+        "system_prompt": TESTER_INTEGRATION_SYSTEM_PROMPT,
+        "step": "tester",
     },
-
-    "review_engine": {
-        "name": "Review Engine Builder",
-        "description": "Content filter node, review nodes, LLM prompts for quality gates",
-        "system_prompt": REVIEW_ENGINE_SYSTEM_PROMPT,
-    },
-
-    "vision_embedding": {
-        "name": "Vision & Embedding Builder",
-        "description": "Image OCR/Russian text detection and article vectorization nodes",
-        "system_prompt": VISION_EMBEDDING_SYSTEM_PROMPT,
-    },
-
-    "dashboard_builder": {
-        "name": "Dashboard Builder",
-        "description": "Pipeline ops dashboard — FastAPI backend routes + React 19 TypeScript frontend",
-        "system_prompt": DASHBOARD_BUILDER_SYSTEM_PROMPT,
-    },
-    "pm": {
-        "name": "Project Manager",
-        "description": "Autonomous PM — reviews agent output and makes approve/reject decisions",
-        "system_prompt": "",  # PM uses specialized prompts in pm_agent.py
-    },
-
-    "tester": {
-        "name": "Test Engineer",
-        "description": "Writes pytest unit tests for backend Python modules",
-        "system_prompt": TESTER_ROLE_SYSTEM_PROMPT,
+    "tester:ci": {
+        "name": "Tester — CI",
+        "description": "Write files to disk, run tox, commit on green",
+        "system_prompt": TESTER_CI_SYSTEM_PROMPT,
+        "step": "ci",
     },
 }
 

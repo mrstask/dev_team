@@ -57,13 +57,7 @@ def run_react_loop(
             console.print(f"[red]  LLM error: {e}[/red]")
             return None
 
-        # Print first line of reasoning
-        clean = content.strip()
-        if clean:
-            first_line = clean.splitlines()[0]
-            if len(first_line) > 120:
-                first_line = first_line[:117] + "..."
-            console.print(f"  {first_line}")
+        _print_reasoning(content)
 
         msg = resp.get("message", {})
         tool_calls = msg.get("tool_calls") or []
@@ -82,63 +76,78 @@ def run_react_loop(
             return None
 
         console.print()
+        _echo_tool_calls(messages, content, tool_calls)
 
-        # Echo tool calls back (arguments must be JSON string per OpenAI protocol)
-        echoed_calls = []
-        for tc in tool_calls:
-            fn = tc.get("function", {})
-            args = fn.get("arguments", {})
-            echoed_calls.append({
-                **tc,
-                "function": {
-                    **fn,
-                    "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else args,
-                },
-            })
-        messages.append({
-            "role": "assistant",
-            "content": content,
-            "tool_calls": echoed_calls,
-        })
-
-        # Dispatch each tool call
         for call in tool_calls:
-            fn = call.get("function", {})
-            name = fn.get("name", "")
-            args = fn.get("arguments", {})
-            call_id = call.get("id", "")
-
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    args = {}
-
-            arg_preview = ", ".join(f"{k}={repr(v)[:60]}" for k, v in args.items())
-            console.print(f"  [yellow]⚙[/yellow] [bold]{name}[/bold]({arg_preview})")
-
-            result = dispatch(name, args)
-
-            # Check for write_files completion
-            if (
-                name == "write_files"
-                and isinstance(result, dict)
-                and result.get("status") == "pending_review"
-            ):
-                n = len(result.get("files", []))
-                console.print(f"  [green]✓[/green] {n} file(s) ready")
-                if on_write_files:
-                    return on_write_files(result)
+            done, result = _dispatch_tool_call(call, messages, on_write_files)
+            if done:
                 return result
-
-            result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-            tool_msg: dict = {"role": "tool", "content": result_str}
-            if call_id:
-                tool_msg["tool_call_id"] = call_id
-            messages.append(tool_msg)
 
     console.print(f"[red]Max rounds ({max_rounds}) reached without write_files.[/red]")
     return None
+
+
+# ── ReAct loop helpers ────────────────────────────────────────────────────────
+
+def _print_reasoning(content: str) -> None:
+    clean = content.strip()
+    if not clean:
+        return
+    first_line = clean.splitlines()[0]
+    if len(first_line) > 120:
+        first_line = first_line[:117] + "..."
+    config.console.print(f"  {first_line}")
+
+
+def _echo_tool_calls(messages: list[dict], content: str, tool_calls: list[dict]) -> None:
+    """Append assistant message with tool calls serialised to JSON strings (OpenAI protocol)."""
+    echoed_calls = []
+    for tc in tool_calls:
+        fn = tc.get("function", {})
+        args = fn.get("arguments", {})
+        echoed_calls.append({
+            **tc,
+            "function": {
+                **fn,
+                "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else args,
+            },
+        })
+    messages.append({"role": "assistant", "content": content, "tool_calls": echoed_calls})
+
+
+def _dispatch_tool_call(
+    call: dict,
+    messages: list[dict],
+    on_write_files: Callable[[dict], dict | list | None] | None,
+) -> tuple[bool, dict | None]:
+    """Dispatch one tool call. Returns (done, result) — done=True on write_files completion."""
+    fn = call.get("function", {})
+    name = fn.get("name", "")
+    args = fn.get("arguments", {})
+    call_id = call.get("id", "")
+
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {}
+
+    arg_preview = ", ".join(f"{k}={repr(v)[:60]}" for k, v in args.items())
+    config.console.print(f"  [yellow]⚙[/yellow] [bold]{name}[/bold]({arg_preview})")
+
+    result = dispatch(name, args)
+
+    if name == "write_files" and isinstance(result, dict) and result.get("status") == "pending_review":
+        n = len(result.get("files", []))
+        config.console.print(f"  [green]✓[/green] {n} file(s) ready")
+        return True, on_write_files(result) if on_write_files else result
+
+    result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+    tool_msg: dict = {"role": "tool", "content": result_str}
+    if call_id:
+        tool_msg["tool_call_id"] = call_id
+    messages.append(tool_msg)
+    return False, None
 
 
 # ── Text-based tool call extraction ───────────────────────────────────────────

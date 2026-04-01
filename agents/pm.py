@@ -13,6 +13,7 @@ from prompts import (
     PM_DEVELOPER_USER_PROMPT,
     PM_TESTING_REVIEW,
     PM_TESTING_USER_PROMPT,
+    PM_USER_STORY_SYSTEM_PROMPT,
 )
 
 
@@ -21,6 +22,38 @@ class PMAgent:
 
     def __init__(self):
         self.client = create_client("pm")
+
+    # ── User story ────────────────────────────────────────────────────────────
+
+    def create_user_story(self, raw_requirement: str) -> dict:
+        """Turn a raw requirement string into a structured user story dict (pm:user-story role)."""
+        config.print_agent_rule("PM — User Story", "pm")
+        try:
+            final_resp, _ = stream_chat_with_display(
+                self.client,
+                messages=[
+                    {"role": "system", "content": PM_USER_STORY_SYSTEM_PROMPT},
+                    {"role": "user", "content": raw_requirement},
+                ],
+                temperature=0.3,
+                timeout=120,
+            )
+            content = final_resp.get("message", {}).get("content", "")
+            return parse_json_response(content)
+        except Exception as e:
+            config.console.print(f"[red]  PM user-story error: {e}[/red]")
+            return {}
+
+    # ── Stubs (future roles) ──────────────────────────────────────────────────
+
+    def run_task_analysis(self, task: dict) -> ReviewResult:
+        raise NotImplementedError("pm:task-analysis is not implemented yet")
+
+    def run_requirement_analysis(self, task: dict) -> ReviewResult:
+        raise NotImplementedError("pm:requirement-analysis is not implemented yet")
+
+    def run_task_closed_analysis(self, task: dict) -> ReviewResult:
+        raise NotImplementedError("pm:task-closed-analysis is not implemented yet")
 
     # ── Review methods ────────────────────────────────────────────────────────
 

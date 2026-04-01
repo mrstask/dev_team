@@ -72,25 +72,9 @@ class ClaudeClient:
 
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock) and block.text.strip():
-                        for line in block.text.strip().splitlines():
-                            if line.strip():
-                                self.console.print(f"  [dim]{line}[/dim]")
-                    elif isinstance(block, ToolUseBlock):
-                        name = block.name
-                        inp = block.input or {}
-                        arg = next(iter(inp.values()), "") if inp else ""
-                        arg_str = repr(arg)[:60] if isinstance(arg, str) else "..."
-                        self.console.print(f"  [green]⚙[/green] [bold]{name}[/bold]({arg_str})")
-                        tool_calls.append({"name": name, "input": inp})
+                self._handle_assistant(message, tool_calls)
             elif isinstance(message, SystemMessage):
-                if getattr(message, "subtype", None) == "init":
-                    sid = getattr(message, "session_id", None) or getattr(
-                        getattr(message, "data", None), "get", lambda k, d=None: d
-                    )("session_id")
-                    if sid:
-                        self.console.print(f"  [dim]session {sid}[/dim]")
+                self._handle_system(message)
             elif isinstance(message, ResultMessage):
                 summary_parts.append(message.result or "")
 
@@ -98,3 +82,28 @@ class ClaudeClient:
             summary="\n".join(summary_parts).strip(),
             tool_calls=tool_calls,
         )
+
+    def _handle_assistant(self, message: AssistantMessage, tool_calls: list[dict]) -> None:
+        for block in message.content:
+            if isinstance(block, TextBlock) and block.text.strip():
+                for line in block.text.strip().splitlines():
+                    if line.strip():
+                        self.console.print(f"  [dim]{line}[/dim]")
+            elif isinstance(block, ToolUseBlock):
+                self._handle_tool_use(block, tool_calls)
+
+    def _handle_tool_use(self, block: ToolUseBlock, tool_calls: list[dict]) -> None:
+        inp = block.input or {}
+        arg = next(iter(inp.values()), "") if inp else ""
+        arg_str = repr(arg)[:60] if isinstance(arg, str) else "..."
+        self.console.print(f"  [green]⚙[/green] [bold]{block.name}[/bold]({arg_str})")
+        tool_calls.append({"name": block.name, "input": inp})
+
+    def _handle_system(self, message: SystemMessage) -> None:
+        if getattr(message, "subtype", None) != "init":
+            return
+        sid = getattr(message, "session_id", None) or getattr(
+            getattr(message, "data", None), "get", lambda k, d=None: d
+        )("session_id")
+        if sid:
+            self.console.print(f"  [dim]session {sid}[/dim]")

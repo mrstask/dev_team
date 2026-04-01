@@ -90,12 +90,10 @@ MAX_TASK_RETRIES = 5            # max retries per task before marking failed
 
 # Map task labels → agent role keys
 LABEL_TO_ROLE: dict[str, str] = {
-    "architect":        "architect",
-    "developer":        "developer",
-    "etl-porter":       "etl_porter",
-    "pipeline-builder": "pipeline_builder",
-    "review-engine":    "review_engine",
-    "vision-embedding": "vision_embedding",
-    "dashboard-builder":"dashboard_builder",
-    "tester":           "tester",
+    "architect":          "architect:design",
+    "developer":          "developer:implement",
+    "developer-review":   "developer:review",
+    "tester":             "tester:unit-tests",
+    "tester-integration": "tester:integration-tests",
+    "tester-ci":          "tester:ci",
 }

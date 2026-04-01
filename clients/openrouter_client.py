@@ -24,6 +24,36 @@ def _dump_debug_log(payload: dict, status: int, body: str) -> Path:
     return log_path
 
 
+def _parse_sse_line(line: str) -> dict | None:
+    """Strip SSE framing and parse JSON. Returns None for lines to skip."""
+    line = line.strip()
+    if not line or line == "data: [DONE]":
+        return None
+    if line.startswith("data: "):
+        line = line[6:]
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+
+def _accumulate_tool_calls(tc_deltas: list[dict], acc: dict[int, dict]) -> None:
+    """Merge streaming tool-call deltas into the accumulator dict."""
+    for tc_delta in tc_deltas:
+        idx = tc_delta.get("index", 0)
+        if idx not in acc:
+            acc[idx] = {
+                "id":       tc_delta.get("id", ""),
+                "type":     "function",
+                "function": {"name": "", "arguments": ""},
+            }
+        fn = tc_delta.get("function", {})
+        acc[idx]["function"]["name"]      += fn.get("name", "")
+        acc[idx]["function"]["arguments"] += fn.get("arguments", "")
+        if tc_delta.get("id"):
+            acc[idx]["id"] = tc_delta["id"]
+
+
 class OpenRouterClient:
     def __init__(self, api_key: str, model: str, site_url: str = "", site_name: str = "dev-team"):
         self.api_key   = api_key
@@ -104,61 +134,41 @@ class OpenRouterClient:
                         response=resp,
                     )
                 for line in resp.iter_lines():
-                    line = line.strip()
-                    if not line or line == "data: [DONE]":
-                        continue
-                    if line.startswith("data: "):
-                        line = line[6:]
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
+                    data = _parse_sse_line(line)
+                    if data is None:
                         continue
 
                     delta = data.get("choices", [{}])[0].get("delta", {})
                     finish = data.get("choices", [{}])[0].get("finish_reason")
 
-                    # Accumulate text
                     chunk = delta.get("content") or ""
                     if chunk:
                         full_content += chunk
                         yield chunk, None
 
-                    # Accumulate tool call deltas
-                    for tc_delta in delta.get("tool_calls", []):
-                        idx = tc_delta.get("index", 0)
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id":       tc_delta.get("id", ""),
-                                "type":     "function",
-                                "function": {"name": "", "arguments": ""},
-                            }
-                        fn = tc_delta.get("function", {})
-                        tool_calls_acc[idx]["function"]["name"]      += fn.get("name", "")
-                        tool_calls_acc[idx]["function"]["arguments"] += fn.get("arguments", "")
-                        if tc_delta.get("id"):
-                            tool_calls_acc[idx]["id"] = tc_delta["id"]
+                    _accumulate_tool_calls(delta.get("tool_calls", []), tool_calls_acc)
 
                     if finish in ("stop", "tool_calls", "length"):
-                        # Parse accumulated tool call arguments
-                        tool_calls = list(tool_calls_acc.values())
-                        for tc in tool_calls:
-                            raw = tc["function"]["arguments"]
-                            try:
-                                tc["function"]["arguments"] = json.loads(raw)
-                            except json.JSONDecodeError:
-                                tc["function"]["arguments"] = {}
-
-                        final_response: dict = {
-                            "model": self.model,
-                            "message": {
-                                "role":       "assistant",
-                                "content":    full_content,
-                                "tool_calls": tool_calls,
-                            },
-                            "done": True,
-                        }
-                        yield "", final_response
+                        yield "", self._build_final_response(full_content, tool_calls_acc)
                         return
+
+    def _build_final_response(self, full_content: str, tool_calls_acc: dict[int, dict]) -> dict:
+        tool_calls = list(tool_calls_acc.values())
+        for tc in tool_calls:
+            raw = tc["function"]["arguments"]
+            try:
+                tc["function"]["arguments"] = json.loads(raw)
+            except json.JSONDecodeError:
+                tc["function"]["arguments"] = {}
+        return {
+            "model": self.model,
+            "message": {
+                "role":       "assistant",
+                "content":    full_content,
+                "tool_calls": tool_calls,
+            },
+            "done": True,
+        }
 
     def _normalise(self, data: dict) -> dict:
         """Convert OpenAI response shape → Ollama-compatible shape for DevAgent."""

@@ -1,5 +1,26 @@
 """Tester prompts — role system prompt (used by DevAgent via ROLES) and agent system prompt (used by TestAgent)."""
 
+TESTER_CI_SYSTEM_PROMPT = """/no_think
+You are a git commit message author.
+Write a single conventional commit message for the changes described.
+Format: <type>(<scope>): <short description>
+
+Types: feat, fix, test, refactor, chore
+Scope: the main module or area changed (e.g. models, schemas, pipeline, tests)
+Short description: imperative, ≤72 chars total, no period at end.
+
+Respond with ONLY the commit message string, nothing else.
+"""
+
+TESTER_INTEGRATION_SYSTEM_PROMPT = """/no_think
+You are a senior Python integration test engineer for the target project.
+
+Your job: write pytest integration tests that verify cross-module behaviour —
+API routes calling services calling repositories with a real in-memory database.
+
+NOT IMPLEMENTED YET — raise NotImplementedError if called.
+"""
+
 TESTER_USER_PROMPT_HEADER = (
     "Write pytest unit tests for the following implementation.\n"
     "Task: {title}\n"
