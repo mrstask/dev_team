@@ -156,7 +156,7 @@ def _process_task(task: dict) -> None:
 def _handle_architect_todo(task: dict) -> None:
     """Run ClaudeAgent, save output, set action:review for PM."""
     console = config.console
-    run_id = _db.create_run(task["id"], _agent_id_cache.get("architect"), "architect")
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("architect:design"), "architect")
     result = ClaudeAgent("architect").run(task)
 
     if not result or not result.files:
@@ -179,7 +179,7 @@ def _handle_architect_todo(task: dict) -> None:
 def _handle_architect_review(task: dict) -> None:
     """PM reviews architect output. Approve → create subtasks. Reject → retry."""
     console = config.console
-    run_id = _db.create_run(task["id"], _agent_id_cache.get("pm"), "pm-review")
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("pm:architect-review"), "pm-review")
     ctx = _load_context(task["id"], "architect")
     if not ctx:
         console.print("[red]No architect context found. Resetting to action:todo.[/red]")
@@ -242,7 +242,7 @@ def _handle_develop_todo(task: dict) -> None:
     """Run DevAgent on a development task. Set action:review when done."""
     console = config.console
     role = get_role_for_task(task) or "developer"
-    run_id = _db.create_run(task["id"], _agent_id_cache.get(role) or _agent_id_cache.get("developer"), "developer")
+    run_id = _db.create_run(task["id"], _agent_id_cache.get(role) or _agent_id_cache.get("developer:implement"), "developer")
 
     skeleton_files = _load_context(task["id"], "skeleton_files")
     previous_files = _load_context(task["id"], "previous_files")
@@ -274,7 +274,7 @@ def _handle_develop_todo(task: dict) -> None:
 def _handle_develop_review(task: dict) -> None:
     """PM reviews developer output. Approve → testing. Reject → retry."""
     console = config.console
-    run_id = _db.create_run(task["id"], _agent_id_cache.get("reviewer"), "code-review")
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("architect:dev-review"), "code-review")
     ctx = _load_context(task["id"], "developer")
     if not ctx:
         console.print("[red]No developer context found. Resetting to action:todo.[/red]")
@@ -304,7 +304,7 @@ def _handle_develop_review(task: dict) -> None:
 
     _db.update_run(run_id, "completed", output_summary="Code review passed")
 
-    pm_run_id = _db.create_run(task["id"], _agent_id_cache.get("pm"), "pm-review")
+    pm_run_id = _db.create_run(task["id"], _agent_id_cache.get("pm:dev-review"), "pm-review")
     pm = PMAgent()
     decision = pm.run_developer_review(task, files, summary)
 
@@ -326,7 +326,7 @@ def _handle_develop_review(task: dict) -> None:
 def _handle_testing_todo(task: dict) -> None:
     """Run TestAgent + CIAgent. Set action:review for PM."""
     console = config.console
-    run_id = _db.create_run(task["id"], _agent_id_cache.get("tester"), "testing")
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("tester:unit-tests"), "testing")
     ctx = _load_context(task["id"], "developer")
     if not ctx:
         console.print("[red]No developer context for testing. Moving back to develop.[/red]")
@@ -362,7 +362,7 @@ def _handle_testing_todo(task: dict) -> None:
 def _handle_testing_review(task: dict) -> None:
     """PM reviews test results. Approve → done. Reject → back to develop."""
     console = config.console
-    run_id = _db.create_run(task["id"], _agent_id_cache.get("pm"), "pm-review")
+    run_id = _db.create_run(task["id"], _agent_id_cache.get("pm:testing-review"), "pm-review")
     ctx = _load_context(task["id"], "testing")
     if not ctx:
         console.print("[red]No testing context found. Resetting to action:todo.[/red]")
