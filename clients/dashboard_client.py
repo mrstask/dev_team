@@ -162,6 +162,67 @@ class DashboardClient:
             pass
         return {}
 
+    def log_event(self, task_id: int, event_type: str, payload: dict) -> None:
+        """Log an inter-agent communication event. Best-effort — silently ignores errors."""
+        try:
+            with httpx.Client(timeout=10) as client:
+                client.post(
+                    f"{self.base_url}/activity-events",
+                    json={"entity_type": "task", "entity_id": task_id, "event_type": event_type, "payload": payload},
+                )
+        except Exception:
+            pass
+
+    def get_task_events(self, task_id: int) -> list[dict]:
+        """Return all activity events for a task, ordered by creation time."""
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(f"{self.base_url}/activity-events", params={"task_id": task_id})
+                if resp.status_code == 200:
+                    return resp.json()
+        except Exception:
+            pass
+        return []
+
+    def create_suggestion(
+        self,
+        task_id: int,
+        agent_role: str,
+        issue_pattern: str,
+        suggested_instruction: str,
+        evidence: list,
+    ) -> dict | None:
+        """Store a prompt improvement suggestion. Returns created record or None on failure."""
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.post(
+                    f"{self.base_url}/prompt-suggestions",
+                    json={
+                        "task_id": task_id,
+                        "agent_role": agent_role,
+                        "issue_pattern": issue_pattern,
+                        "suggested_instruction": suggested_instruction,
+                        "evidence": evidence,
+                    },
+                )
+                if resp.status_code == 201:
+                    return resp.json()
+        except Exception:
+            pass
+        return None
+
+    def get_suggestions(self, status: str | None = None) -> list[dict]:
+        """Return prompt suggestions, optionally filtered by status."""
+        try:
+            params = {"status": status} if status else {}
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(f"{self.base_url}/prompt-suggestions", params=params)
+                if resp.status_code == 200:
+                    return resp.json()
+        except Exception:
+            pass
+        return []
+
     def sync_agents(self, roles_dict: dict) -> None:
         """Register missing roles as agents in the dashboard."""
         with httpx.Client(timeout=30) as client:

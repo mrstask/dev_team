@@ -23,7 +23,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
-from agents import ClaudeAgent, DevAgent, PMAgent, TestAgent
+from agents import ClaudeAgent, DevAgent, PMAgent, PMAnalysisAgent, TestAgent
 from clients import DashboardClient
 from core import get_role_for_task
 from dtypes import Action, LabelPrefix, Status
@@ -172,6 +172,13 @@ def _handle_architect_todo(task: dict) -> None:
         output_summary=f"{len(result.files)} file(s): {(result.summary or '')[:200]}",
         output_payload=result.model_dump(),
     )
+    _db.log_event(task["id"], "architect:output", {
+        "file_count": len(result.files),
+        "files": [f.path for f in result.files],
+        "subtask_count": len(result.subtasks),
+        "subtasks": [s.title for s in result.subtasks],
+        "summary": result.summary,
+    })
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Architect done — {len(result.files)} file(s). Awaiting PM review.[/green]")
 
@@ -228,6 +235,10 @@ def _handle_architect_review(task: dict) -> None:
 
         _replace_action(task, None)
         _db.update_run(run_id, "completed", output_summary=f"Approved — {len(subtask_ids)} subtask(s) created")
+        _db.log_event(task["id"], "pm:architect_review", {
+            "approved": True,
+            "subtasks_created": subtask_ids,
+        })
         console.print(f"[bold green]PM approved — {len(subtask_ids)} subtask(s) created.[/bold green]")
     else:
         feedback = decision.feedback or "No specific feedback."
@@ -235,6 +246,11 @@ def _handle_architect_review(task: dict) -> None:
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         _db.update_run(run_id, "completed", output_summary=f"Rejected: {feedback[:200]}")
+        _db.log_event(task["id"], "pm:architect_review", {
+            "approved": False,
+            "feedback": feedback,
+            "retry": _get_retry_count(task),
+        })
         console.print("[yellow]PM rejected architect output. Retrying.[/yellow]")
 
 
@@ -267,6 +283,12 @@ def _handle_develop_todo(task: dict) -> None:
         output_summary=f"{len(result.files)} file(s): {(result.summary or '')[:200]}",
         output_payload=result.model_dump(),
     )
+    _db.log_event(task["id"], "developer:output", {
+        "file_count": len(result.files),
+        "files": [f.path for f in result.files],
+        "summary": result.summary,
+        "had_previous_files": _load_context(task["id"], "previous_files") is not None,
+    })
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Developer done — {len(result.files)} file(s). Awaiting PM review.[/green]")
 
@@ -297,6 +319,11 @@ def _handle_develop_review(task: dict) -> None:
             "\n".join(f"- {i}" for i in issues) + f"\n\nOverall: {comment}",
             "Code reviewer rejected",
         )
+        _db.log_event(task["id"], "code_reviewer:rejected", {
+            "issues": issues,
+            "overall_comment": comment,
+            "retry": _get_retry_count(task) + 1,
+        })
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         console.print(f"[yellow]Reviewer rejected — {len(issues)} issue(s). Retrying.[/yellow]")
@@ -312,6 +339,7 @@ def _handle_develop_review(task: dict) -> None:
         _db.move_task(task["id"], Status.TESTING)
         _replace_action(task, Action.TODO)
         _db.update_run(pm_run_id, "completed", output_summary="Approved — moving to testing")
+        _db.log_event(task["id"], "pm:dev_review", {"approved": True})
         console.print("[bold green]PM approved developer output. Moving to testing.[/bold green]")
     else:
         _save_context(task["id"], "previous_files", files)
@@ -320,6 +348,11 @@ def _handle_develop_review(task: dict) -> None:
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         _db.update_run(pm_run_id, "completed", output_summary=f"Rejected: {feedback[:200]}")
+        _db.log_event(task["id"], "pm:dev_review", {
+            "approved": False,
+            "feedback": feedback,
+            "retry": _get_retry_count(task),
+        })
         console.print("[yellow]PM rejected developer output. Retrying.[/yellow]")
 
 
@@ -355,6 +388,13 @@ def _handle_testing_todo(task: dict) -> None:
         output_payload=ci_result.model_dump(),
         logs_text=ci_result.output[:4000] if ci_result.output else None,
     )
+    _db.log_event(task["id"], "tester:ci_result", {
+        "ci_status": ci_result.status,
+        "test_file_count": len(test_result.files),
+        "test_files": [f.path for f in test_result.files],
+        "sha": ci_result.sha,
+        "ci_output_tail": (ci_result.output or "")[-500:],
+    })
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Testing done — CI status: {ci_result.status}. Awaiting PM review.[/green]")
 
@@ -380,11 +420,13 @@ def _handle_testing_review(task: dict) -> None:
 
     if decision.approved:
         if ci_result_raw.get("status") == "committed":
+            _db.log_event(task["id"], "pm:testing_review", {"approved": True, "sha": ci_result_raw.get("sha")})
             _clear_context(task["id"])
             _replace_action(task, None)
             _db.move_task(task["id"], Status.DONE)
             _db.update_run(run_id, "completed", output_summary=f"Approved — task done. SHA: {ci_result_raw.get('sha', '')}")
             console.print(f"[bold green]✓ Task #{task['id']} done![/bold green]")
+            PMAnalysisAgent().run(task["id"])
             if task.get("parent_task_id"):
                 _check_single_parent(task["parent_task_id"])
         else:
@@ -394,6 +436,11 @@ def _handle_testing_review(task: dict) -> None:
             _increment_retry(task)
             _replace_action(task, Action.TODO)
             _db.update_run(run_id, "completed", output_summary=f"Approved but CI status={ci_result_raw.get('status')}")
+            _db.log_event(task["id"], "pm:testing_review", {
+                "approved": False,
+                "reason": "ci_not_committed",
+                "ci_status": ci_result_raw.get("status"),
+            })
             console.print("[yellow]PM approved but CI didn't commit. Back to develop.[/yellow]")
     else:
         _db.move_task(task["id"], Status.DEVELOP)
@@ -403,6 +450,11 @@ def _handle_testing_review(task: dict) -> None:
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         _db.update_run(run_id, "completed", output_summary=f"Rejected: {feedback[:200]}")
+        _db.log_event(task["id"], "pm:testing_review", {
+            "approved": False,
+            "feedback": feedback,
+            "retry": _get_retry_count(task),
+        })
         console.print("[yellow]PM rejected testing output. Back to develop.[/yellow]")
 
 

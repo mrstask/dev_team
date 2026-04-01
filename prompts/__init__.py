@@ -1,6 +1,7 @@
 """Prompt templates for all dev-team agents."""
 
 from prompts.architect import ARCHITECT_DEV_REVIEW_SYSTEM_PROMPT, ARCHITECT_SYSTEM_PROMPT, ARCHITECT_USER_PROMPT
+from prompts.pm_analysis import PM_ANALYSIS_SYSTEM_PROMPT, PM_ANALYSIS_USER_PROMPT_HEADER
 from prompts.ci import COMMIT_SYSTEM_PROMPT, COMMIT_USER_PROMPT
 from prompts.dashboard_builder import DASHBOARD_BUILDER_SYSTEM_PROMPT
 from prompts.developer import DEVELOPER_SYSTEM_PROMPT
@@ -31,6 +32,8 @@ from prompts.vision_embedding import VISION_EMBEDDING_SYSTEM_PROMPT
 
 __all__ = [
     "ARCHITECT_DEV_REVIEW_SYSTEM_PROMPT",
+    "PM_ANALYSIS_SYSTEM_PROMPT",
+    "PM_ANALYSIS_USER_PROMPT_HEADER",
     "ARCHITECT_SYSTEM_PROMPT",
     "ARCHITECT_USER_PROMPT",
     "COMMIT_SYSTEM_PROMPT",

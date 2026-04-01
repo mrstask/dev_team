@@ -69,6 +69,44 @@ def kick_cmd(task_id: int) -> None:
     config.console.print(f"[green]Task #{task_id} moved to architect + action:todo.[/green]")
 
 
+@cli.command("suggestions")
+@click.option("--status", default="open", show_default=True, help="Filter by status: open | applied | dismissed | all")
+def suggestions_cmd(status: str) -> None:
+    """Print open prompt improvement suggestions grouped by agent role."""
+    from rich.table import Table
+
+    db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+    items = db.get_suggestions(status=None if status == "all" else status)
+
+    if not items:
+        config.console.print(f"[dim]No suggestions with status '{status}'.[/dim]")
+        return
+
+    by_role: dict[str, list] = {}
+    for s in items:
+        by_role.setdefault(s["agent_role"], []).append(s)
+
+    _STATUS_COLOR = {"open": "yellow", "applied": "green", "dismissed": "dim"}
+
+    for role, suggestions in sorted(by_role.items()):
+        tbl = Table(title=f"[bold]{role}[/bold] ({len(suggestions)})", header_style="bold", show_lines=True)
+        tbl.add_column("ID", width=4)
+        tbl.add_column("Issue Pattern", min_width=32)
+        tbl.add_column("Suggested Instruction", min_width=42)
+        tbl.add_column("Status", width=10)
+        tbl.add_column("Task", width=6)
+        for s in suggestions:
+            color = _STATUS_COLOR.get(s["status"], "white")
+            tbl.add_row(
+                str(s["id"]),
+                s["issue_pattern"][:80],
+                s["suggested_instruction"][:100],
+                f"[{color}]{s['status']}[/{color}]",
+                str(s["task_id"]),
+            )
+        config.console.print(tbl)
+
+
 @cli.command("status")
 def status_cmd() -> None:
     """Check Ollama, OpenRouter, and dashboard API health."""

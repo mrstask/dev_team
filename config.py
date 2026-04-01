@@ -7,8 +7,10 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.rule import Rule
 
-# Load .env from the project root
-load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+# Load .env from dev_team directory, then fall back to parent project root
+_here = Path(__file__).parent
+load_dotenv(_here / ".env", override=True)
+load_dotenv(_here.parent / ".env")
 
 # ── Project Paths ──────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent           # target project root

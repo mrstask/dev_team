@@ -51,7 +51,7 @@ ROLES: dict[str, dict] = {
         "name": "Architect — Dev Review",
         "description": "Code review of developer implementation against task specification",
         "system_prompt": ARCHITECT_DEV_REVIEW_SYSTEM_PROMPT,
-        "step": "reviewer",
+        "step": "architect",
     },
 
     # ── Developer ─────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ ROLES: dict[str, dict] = {
         "name": "Tester — CI",
         "description": "Write files to disk, run tox, commit on green",
         "system_prompt": TESTER_CI_SYSTEM_PROMPT,
-        "step": "ci",
+        "step": "tester",
     },
 }
 

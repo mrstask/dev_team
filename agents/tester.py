@@ -54,7 +54,7 @@ class TestAgent:
 
     def run_ci(self, task: dict, files: list[dict], summary: str) -> CIResult:
         """Write files, run tox, commit on green (tester:ci role)."""
-        config.print_agent_rule("Tester — CI", "ci", extra=f"{len(files)} file(s)")
+        config.print_agent_rule("Tester — CI", "tester", extra=f"{len(files)} file(s)")
 
         written: list[Path] = []
         for f in files:
@@ -103,7 +103,7 @@ class TestAgent:
         if len(files) > 8:
             paths += f" (+{len(files) - 8} more)"
 
-        client = create_client("ci")
+        client = create_client("tester")
         from prompts import COMMIT_USER_PROMPT
         prompt = COMMIT_USER_PROMPT.format(title=task["title"], summary=summary, paths=paths)
         try:
