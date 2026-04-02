@@ -93,10 +93,14 @@ def _print_reasoning(content: str) -> None:
     clean = content.strip()
     if not clean:
         return
-    first_line = clean.splitlines()[0]
-    if len(first_line) > 120:
-        first_line = first_line[:117] + "..."
-    config.console.print(f"  {first_line}")
+    lines = clean.splitlines()
+    # Print up to 6 lines; truncate long ones
+    for line in lines[:6]:
+        if len(line) > 160:
+            line = line[:157] + "..."
+        config.console.print(f"  [dim]{line}[/dim]")
+    if len(lines) > 6:
+        config.console.print(f"  [dim]… ({len(lines) - 6} more lines)[/dim]")
 
 
 def _echo_tool_calls(messages: list[dict], content: str, tool_calls: list[dict]) -> None:
@@ -129,7 +133,8 @@ def _dispatch_tool_call(
     if isinstance(args, str):
         try:
             args = json.loads(args)
-        except Exception:
+        except Exception as e:
+            config.console.print(f"[red]  tool args JSON parse failed for '{name}': {e} (len={len(args)})[/red]")
             args = {}
 
     arg_preview = ", ".join(f"{k}={repr(v)[:60]}" for k, v in args.items())
@@ -137,17 +142,33 @@ def _dispatch_tool_call(
 
     result = dispatch(name, args)
 
-    if name == "write_files" and isinstance(result, dict) and result.get("status") == "pending_review":
-        n = len(result.get("files", []))
-        config.console.print(f"  [green]✓[/green] {n} file(s) ready")
+    if name in ("write_files", "finish") and isinstance(result, dict) and result.get("status") == "pending_review":
+        written = result.get("written", [])
+        n = len(written)
+        for p in written:
+            config.console.print(f"  [green]wrote[/green] {p}")
+        config.console.print(f"  [green]✓[/green] {n} file(s) written to disk, pending PM review")
         return True, on_write_files(result) if on_write_files else result
 
     result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+    _print_tool_result(name, result_str)
     tool_msg: dict = {"role": "tool", "content": result_str}
     if call_id:
         tool_msg["tool_call_id"] = call_id
     messages.append(tool_msg)
     return False, None
+
+
+def _print_tool_result(name: str, result_str: str) -> None:
+    """Print a short preview of a tool result."""
+    preview = result_str.strip()
+    lines = preview.splitlines()
+    shown = lines[:4]
+    suffix = f"  [dim]… +{len(lines) - 4} lines[/dim]" if len(lines) > 4 else ""
+    label = f"  [dim cyan]← {name}:[/dim cyan] "
+    config.console.print(label + "[dim]" + "\n".join(shown)[:300] + "[/dim]")
+    if suffix:
+        config.console.print(suffix)
 
 
 # ── Text-based tool call extraction ───────────────────────────────────────────

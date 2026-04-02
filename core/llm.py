@@ -6,13 +6,17 @@ from rich.live import Live
 from rich.text import Text
 
 import config
-from clients import OllamaClient, OpenRouterClient
+from clients import ClaudeClient, OllamaClient, OpenRouterClient
 
 
 # ── Client factory ────────────────────────────────────────────────────────────
 
-def create_client(step_name: str) -> OllamaClient | OpenRouterClient:
-    """Create an LLM client for the given pipeline step (from models.json)."""
+def create_client(step_name: str) -> ClaudeClient | OllamaClient | OpenRouterClient:
+    """Create an LLM client for the given pipeline step (from models.json).
+
+    Reads backend and model from models.json — adding a new backend only
+    requires updating this factory and models.json, not individual agents.
+    """
     s = config.step(step_name)
     backend = s["backend"]
     model = s["model"]
@@ -23,6 +27,8 @@ def create_client(step_name: str) -> OllamaClient | OpenRouterClient:
         return OpenRouterClient(config.OPENROUTER_API_KEY, model)
     if backend == "ollama":
         return OllamaClient(config.OLLAMA_URL, model)
+    if backend == "claude-code":
+        return ClaudeClient(console=config.console)
     raise ValueError(f"Unknown backend '{backend}' for step '{step_name}'")
 
 
@@ -35,7 +41,7 @@ def stream_chat_with_display(
     tools: list[dict] | None = None,
     temperature: float = 0.05,
     timeout: int = 600,
-    preview_lines: int = 2,
+    preview_lines: int = 10,
 ) -> tuple[dict, str]:
     """
     Stream an LLM chat response with a Rich Live preview.
@@ -46,7 +52,7 @@ def stream_chat_with_display(
     accumulated = ""
     final_resp: dict = {}
 
-    with Live("", console=console, refresh_per_second=10, transient=True) as live:
+    with Live("", console=console, refresh_per_second=12, transient=False) as live:
         for chunk, final in client.stream_chat(
             messages=messages,
             tools=tools,

@@ -1,4 +1,5 @@
 """Tool implementations + Ollama function call specs for the dev agents."""
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -81,40 +82,52 @@ TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "write_files",
+            "name": "write_file",
             "description": (
-                "Submit completed work. "
-                "Write ALL files you created or modified. "
-                "Call this ONCE when the task is fully implemented. "
-                "Paths must be relative to the project root."
+                "Write a single file to disk. "
+                "Call this once per file — do NOT bundle multiple files into one call. "
+                "Paths must be relative to the project root — start with 'backend/', 'frontend/', etc. "
+                "NEVER include the project name in paths (e.g. never 'habr-agentic/backend/...'). "
+                "After writing ALL files, call finish() to complete the task."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "files": {
-                        "type": "array",
-                        "description": "Files to write to the project",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": {
-                                    "type": "string",
-                                    "description": "Path relative to project root",
-                                },
-                                "content": {
-                                    "type": "string",
-                                    "description": "Complete file content",
-                                },
-                            },
-                            "required": ["path", "content"],
-                        },
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Path relative to project root. "
+                            "Examples: 'backend/app/models/article.py', "
+                            "'backend/alembic/versions/0002_articles.py'. "
+                            "NEVER start with the project folder name."
+                        ),
                     },
+                    "content": {
+                        "type": "string",
+                        "description": "Complete file content",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finish",
+            "description": (
+                "Signal that all files have been written and the task is complete. "
+                "Call this ONCE after all write_file calls are done."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
                     "summary": {
                         "type": "string",
                         "description": "What was implemented, key decisions made",
                     },
                 },
-                "required": ["files", "summary"],
+                "required": ["summary"],
             },
         },
     },
@@ -202,15 +215,65 @@ def search_code(pattern: str, path: str = "backend") -> str:
         return f"ERROR: {e}"
 
 
+def write_file(path: str, content: str) -> str:
+    """Write a single file to disk. Returns a status string."""
+    if not path:
+        return "ERROR: path is required"
+    # Strip accidental project-name prefix (e.g. "habr-agentic/backend/...")
+    root_name = config.ROOT.name
+    if path.startswith(root_name + "/"):
+        path = path[len(root_name) + 1:]
+    try:
+        target = config.ROOT / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return f"OK: wrote {path}"
+    except Exception as e:
+        return f"ERROR writing {path}: {e}"
+
+
+# Accumulator for files written via write_file() in the current loop iteration
+_written_files: list[dict] = []
+
+
+def finish(summary: str) -> dict:
+    """Signal task completion — collects all write_file() calls made this turn."""
+    files = list(_written_files)
+    _written_files.clear()
+    return {"status": "pending_review", "files": files, "summary": summary, "written": [f["path"] for f in files]}
+
+
 def write_files(files: list[dict] | str, summary: str) -> dict:
-    """Deferred — actual writing happens after PM review in orchestrator."""
+    """Legacy bulk write — kept for backward compat. Writes all files then signals done."""
     if isinstance(files, str):
-        import json
         try:
             files = json.loads(files)
-        except Exception:
+        except Exception as e:
+            config.console.print(f"[red]  write_files: JSON parse failed ({e}) — 0 files written[/red]")
             files = []
-    return {"status": "pending_review", "files": files, "summary": summary}
+
+    written: list[str] = []
+    errors: list[str] = []
+    for f in files:
+        path = f.get("path", "")
+        content = f.get("content", "")
+        if not path:
+            continue
+        root_name = config.ROOT.name
+        if path.startswith(root_name + "/"):
+            path = path[len(root_name) + 1:]
+        try:
+            target = config.ROOT / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            written.append(path)
+        except Exception as e:
+            errors.append(f"{path}: {e}")
+
+    if errors:
+        config.console.print(f"[red]  write_files errors: {'; '.join(errors)}[/red]")
+
+    return {"status": "pending_review", "files": files, "summary": summary, "written": written}
 
 
 
@@ -223,6 +286,15 @@ def dispatch(name: str, args: dict) -> Any:
         return list_files(args.get("pattern", ""))
     if name == "search_code":
         return search_code(args.get("pattern", ""), args.get("path", "backend"))
+    if name == "write_file":
+        path = args.get("path", "")
+        content = args.get("content", "")
+        result = write_file(path, content)
+        if result.startswith("OK:"):
+            _written_files.append({"path": path, "content": content})
+        return result
+    if name == "finish":
+        return finish(args.get("summary", ""))
     if name == "write_files":
         return write_files(args.get("files", []), args.get("summary", ""))
     return f"ERROR: Unknown tool '{name}'"

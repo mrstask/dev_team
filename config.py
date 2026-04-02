@@ -13,7 +13,7 @@ load_dotenv(_here / ".env", override=True)
 load_dotenv(_here.parent / ".env")
 
 # ── Project Paths ──────────────────────────────────────────────────────────────
-ROOT = Path(__file__).parent.parent           # target project root
+ROOT = Path(__file__).parent.parent / "habr-agentic"  # target project root
 BACKEND = ROOT / "backend"
 FRONTEND = ROOT / "frontend"
 
@@ -81,10 +81,10 @@ MAX_TOOL_ROUNDS = 25       # Max ReAct rounds before giving up
 RETRY_WITH_CONTEXT = True
 
 # Directory where retry context (previous attempt files) is persisted
-RETRY_DIR = ROOT / "dev_team" / "_retry"
+RETRY_DIR = _here / "_retry"
 
 # Broader context storage — architect output, PM review data, retry files
-CONTEXT_DIR = ROOT / "dev_team" / "_context"
+CONTEXT_DIR = _here / "_context"
 
 # ── Event Loop ────────────────────────────────────────────────────────────
 EVENT_LOOP_POLL_INTERVAL = 10   # seconds between dashboard polls

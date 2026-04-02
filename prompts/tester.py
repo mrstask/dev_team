@@ -35,7 +35,7 @@ TESTER_USER_PROMPT_FOOTER = (
     "- Use pytest, pytest-asyncio for async, in-memory SQLite for DB tests\n"
     "- Mock all external I/O (HTTP, file system, env vars where needed)\n"
     "- Test all enum values, model fields, schema validation, and key logic\n"
-    "- Call write_files with all test files when done"
+    "- Call write_file(path, content) once per file, then finish(summary) when all files are written"
 )
 
 TESTER_ROLE_SYSTEM_PROMPT = """/no_think
@@ -52,6 +52,13 @@ Testing conventions:
   e.g. backend/app/models/article.py → backend/tests/test_models_article.py
 - Each test file must start with module-level fixtures if needed
 
+CRITICAL — async SQLAlchemy inspection (aiosqlite):
+- NEVER use `inspect(conn.sync_connection).get_table_names()` directly — MissingGreenlet error
+- ALWAYS use conn.run_sync(): `tables = await conn.run_sync(lambda c: inspect(c).get_table_names())`
+
+CRITICAL — importing Alembic migration files:
+- backend/alembic/ has no __init__.py — use importlib.util.spec_from_file_location to load by path
+
 What to test for each module type:
   Models     — table creation, field types, defaults, relationships, association tables
   Schemas    — valid input parsing, missing required fields, field aliases
@@ -65,13 +72,7 @@ Keep tests focused and fast. No real network calls, no real DB files.
 Test one thing per test function. Use descriptive names: test_article_status_enum_values.
 
 Use read_file / list_files / search_code to read the actual source files before writing tests.
-Call write_files with all test files and a summary when done.
-
-CRITICAL — JSON formatting rules:
-- write_files arguments MUST be valid JSON
-- File content goes in a regular JSON string — NOT Python triple-quotes
-- Escape newlines as \\n, escape quotes as \\"
-- Example: {"name": "write_files", "arguments": {"files": [{"path": "backend/tests/test_foo.py", "content": "import pytest\\n\\ndef test_foo():\\n    assert True\\n"}], "summary": "..."}}
+Call write_file(path, content) once per file. After ALL files are written, call finish(summary).
 """
 
 TESTER_AGENT_SYSTEM_PROMPT = """/no_think
@@ -88,6 +89,28 @@ Testing conventions:
   e.g. backend/app/models/article.py → backend/tests/test_models_article.py
 - Each test file must start with the module-level fixtures if needed
 
+CRITICAL — async SQLAlchemy inspection (aiosqlite):
+- NEVER call `inspect(conn.sync_connection).get_table_names()` etc. directly — it causes MissingGreenlet errors
+- ALWAYS wrap sync inspector calls with `conn.run_sync()`:
+  ```python
+  tables = await conn.run_sync(lambda c: inspect(c).get_table_names())
+  columns = await conn.run_sync(lambda c: inspect(c).get_columns("my_table"))
+  indexes = await conn.run_sync(lambda c: inspect(c).get_indexes("my_table"))
+  uniques = await conn.run_sync(lambda c: inspect(c).get_unique_constraints("my_table"))
+  ```
+
+CRITICAL — importing Alembic migration files:
+- The `backend/alembic/` directory is NOT a Python package (no __init__.py) so you cannot do `from alembic.versions import X`
+- Use importlib to load migration files by path:
+  ```python
+  import importlib.util
+  import pathlib
+  _migration_path = pathlib.Path(__file__).parent.parent / "alembic" / "versions" / "0001_initial_app_tables.py"
+  _spec = importlib.util.spec_from_file_location("migration_0001", _migration_path)
+  migration = importlib.util.module_from_spec(_spec)
+  _spec.loader.exec_module(migration)
+  ```
+
 What to test for each module type:
   Models     — table creation, field types, defaults, relationships, association tables
   Schemas    — valid input parsing, missing required fields, field aliases
@@ -100,5 +123,5 @@ What to test for each module type:
 Keep tests focused and fast. No real network calls, no real DB files.
 Test one thing per test function. Use descriptive names: `test_article_status_enum_values`.
 
-Output format: call write_files with all test files and a summary.
+Output format: call write_file(path, content) for each file, then finish(summary) when done.
 """

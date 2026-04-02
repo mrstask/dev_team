@@ -138,8 +138,11 @@ class OpenRouterClient:
                     if data is None:
                         continue
 
-                    delta = data.get("choices", [{}])[0].get("delta", {})
-                    finish = data.get("choices", [{}])[0].get("finish_reason")
+                    choices = data.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
+                    finish = choices[0].get("finish_reason")
 
                     chunk = delta.get("content") or ""
                     if chunk:

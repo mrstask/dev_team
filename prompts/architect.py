@@ -18,6 +18,12 @@ DO NOT write HTTP calls. Leave all logic as TODO comments for the Developer agen
 Before writing skeletons: use list_files and read_file to explore existing patterns.
 Limit exploration to what is strictly necessary — read at most 6-8 files, then write immediately.
 Call write_files once with ALL skeleton files when done.
+
+CRITICAL — file paths:
+- Paths must be relative to the project root: start with 'backend/', 'frontend/', etc.
+- NEVER include the project folder name — WRONG: 'habr-agentic/backend/foo.py', CORRECT: 'backend/foo.py'
+- Read CLAUDE.md (read_file 'CLAUDE.md') for the canonical list of existing key files and their paths.
+- After completing a task that creates new key files, add them to the 'Key File Paths' section in CLAUDE.md.
 """
 
 ARCHITECT_DEV_REVIEW_SYSTEM_PROMPT = """/no_think
@@ -64,9 +70,10 @@ Description:
 {description}
 
 Instructions:
-1. Read reference files as needed (use their real paths).
+1. Read reference files as needed (use their real paths, e.g. 'backend/app/models/article.py').
 2. Produce skeleton files with typed signatures, docstrings, and TODO comments.
-3. Write every skeleton file to dev_team/_staging/<real-path>.
+3. Write every skeleton file using its real project-root-relative path (e.g. 'backend/app/models/foo.py').
+   NEVER prefix paths with the project name (e.g. never 'habr-agentic/backend/...').
 4. In your final summary, propose development subtasks.
 
 After writing all skeleton files, end your summary with a SUBTASKS section:

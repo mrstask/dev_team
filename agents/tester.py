@@ -1,10 +1,10 @@
 """TestAgent — generates pytest unit tests and runs CI for approved implementation files."""
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
-from rich.live import Live
 from rich.panel import Panel
-from rich.text import Text
 
 import config
 from core import create_client, run_react_loop
@@ -55,25 +55,22 @@ class TestAgent:
     def run_ci(self, task: dict, files: list[dict], summary: str) -> CIResult:
         """Write files, run tox, commit on green (tester:ci role)."""
         config.print_agent_rule("Tester — CI", "tester", extra=f"{len(files)} file(s)")
+        _ensure_ci_env()
 
         written: list[Path] = []
         for f in files:
-            p = config.ROOT / f["path"]
+            path = _sanitize_path(f["path"])
+            p = config.ROOT / path
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(f["content"], encoding="utf-8")
             written.append(p)
-            config.console.print(f"  [green]wrote[/green] {f['path']}")
+            config.console.print(f"  [green]wrote[/green] {path}")
 
         returncode, tox_output = _run_tox()
         last_lines = "\n".join(tox_output.splitlines()[-40:])
 
         if returncode != 0:
             config.console.print(Panel(last_lines, title="[red]tox FAILED[/red]", border_style="red"))
-            for p in written:
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
             return CIResult(status="failed", output=last_lines)
 
         config.console.print(Panel(last_lines, title="[green]tox PASSED[/green]", border_style="green"))
@@ -125,30 +122,124 @@ class TestAgent:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _ensure_ci_env() -> None:
+    """Provision the test environment on first use: venv, deps, tests scaffold."""
+    console = config.console
+    backend = config.BACKEND
+
+    # ── 1. Backend venv ──────────────────────────────────────────────────────
+    venv_dir = backend / ".venv"
+    venv_python = venv_dir / "bin" / "python"
+    if not venv_python.exists():
+        console.print("[dim]  CI setup: creating backend/.venv ...[/dim]")
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+
+    pip = venv_dir / "bin" / "pip"
+
+    # ── 2. Install backend deps ───────────────────────────────────────────────
+    req = backend / "requirements.txt"
+    req_test = backend / "requirements-test.txt"
+    if req.exists():
+        console.print("[dim]  CI setup: pip install -r requirements.txt ...[/dim]")
+        subprocess.run([str(pip), "install", "-q", "-r", str(req)], check=False)
+    if req_test.exists():
+        console.print("[dim]  CI setup: pip install -r requirements-test.txt ...[/dim]")
+        subprocess.run([str(pip), "install", "-q", "-r", str(req_test)], check=False)
+    else:
+        # Ensure at least pytest + asyncio support is present
+        subprocess.run(
+            [str(pip), "install", "-q", "pytest", "pytest-asyncio", "aiosqlite"],
+            check=False,
+        )
+
+    # ── 3. Tests directory scaffold ───────────────────────────────────────────
+    tests_dir = backend / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    init = tests_dir / "__init__.py"
+    if not init.exists():
+        init.write_text("", encoding="utf-8")
+        console.print("[dim]  CI setup: created backend/tests/__init__.py[/dim]")
+
+    conftest = tests_dir / "conftest.py"
+    if not conftest.exists():
+        conftest.write_text(
+            "import pytest\n\n"
+            "# Add backend/ to sys.path so tests can import app modules\n"
+            "import sys, pathlib\n"
+            "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))\n",
+            encoding="utf-8",
+        )
+        console.print("[dim]  CI setup: created backend/tests/conftest.py[/dim]")
+
+    console.print("[dim]  CI setup: done.[/dim]")
+
+
 def _run_tox() -> tuple[int, str]:
-    tox_output = ""
-    config.console.print("\n[dim]  Running tox ...[/dim]")
+    """Run the test suite. Uses tox if available, falls back to pytest directly."""
+
+    tox_bin = shutil.which("tox")
+
+    def _find_pytest() -> Path | None:
+        # Prefer backend venv (set up by _ensure_ci_env), then fall back to .tox envs
+        candidates = [
+            config.BACKEND / ".venv" / "bin" / "pytest",
+            config.BACKEND / "venv" / "bin" / "pytest",
+            *sorted((config.ROOT / ".tox").glob("*/bin/pytest")),
+        ]
+        return next((p for p in candidates if p.exists()), None)
+
+    if tox_bin:
+        cmd = [tox_bin]
+        cwd = str(config.ROOT)
+        label = "tox"
+    else:
+        found = _find_pytest()
+        pytest_bin = str(found) if found else (shutil.which("pytest") or "pytest")
+        cmd = [pytest_bin, "tests/", "-v", "--tb=short"]
+        cwd = str(config.BACKEND)
+        label = f"pytest ({pytest_bin})"
+
+    output = ""
+    config.console.print(f"\n[dim]  Running {label} ...[/dim]")
     try:
         process = subprocess.Popen(
-            ["tox"],
-            cwd=str(config.ROOT),
+            cmd,
+            cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
         )
-        with Live("", console=config.console, refresh_per_second=4, transient=True) as live:
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    tox_output += line
-                    live.update(Text(f"  {line.strip()}", style="dim italic"))
+        for line in process.stdout:
+            output += line
+            config.console.print(f"  [dim]{line.rstrip()}[/dim]")
         process.wait(timeout=300)
-        return process.returncode, tox_output
+        return process.returncode, output
+    except FileNotFoundError:
+        msg = f"ERROR: '{cmd[0]}' not found. Install tox or pytest in the backend venv."
+        config.console.print(f"[red]  {msg}[/red]")
+        return 1, msg
     except Exception as e:
+        config.console.print(f"[red]  CI error: {e}[/red]")
         return 1, str(e)
+
+
+def _sanitize_path(path: str) -> str:
+    """Strip any leading project-name prefix from a file path.
+
+    Agents sometimes prefix paths with the project folder name (e.g.
+    'habr-agentic/backend/foo.py'). Strip it so we always write relative
+    to config.ROOT.
+    """
+    root_name = config.ROOT.name  # e.g. "habr-agentic"
+    prefix = root_name + "/"
+    if path.startswith(prefix):
+        stripped = path[len(prefix):]
+        config.console.print(
+            f"  [yellow]⚠ path prefix '{root_name}/' stripped: {path} → {stripped}[/yellow]"
+        )
+        return stripped
+    return path
 
 
 def _get_head_sha(root: Path) -> str:

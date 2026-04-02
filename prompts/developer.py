@@ -6,7 +6,8 @@ DEVELOPER_TASK_PROMPT = (
     "Instructions:\n"
     "1. Use read_file / list_files / search_code to gather context if needed.\n"
     "2. Implement the task completely and correctly.\n"
-    "3. Call write_files with ALL created/modified files and a summary.\n"
+    "3. Call write_file(path, content) ONCE PER FILE — one file per call, not all at once.\n"
+    "4. After ALL files are written, call finish(summary) to complete the task.\n"
 )
 
 DEVELOPER_SKELETON_HEADER = "\nSkeleton files from Architect ({count} files):\n"
@@ -32,6 +33,16 @@ Rules:
 - Use read_file / list_files / search_code to gather context from existing code if needed
 - No synchronous I/O — all DB and HTTP calls must be async
 - Already-implemented files in the project for consistency
+
+CRITICAL — writing files:
+- Call write_file(path, content) ONCE PER FILE. Never bundle multiple files into one call.
+- After writing ALL files, call finish(summary) — this signals task completion.
+- Paths MUST be relative to the project root: start with 'backend/', 'frontend/', 'alembic/', etc.
+- NEVER include the project folder name in paths — e.g. WRONG: 'habr-agentic/backend/app/models/foo.py'
+- CORRECT: 'backend/app/models/foo.py'
+- If you see any path starting with 'habr-agentic/', 'habr_agentic/', or similar project names — remove that prefix.
+- Read 'CLAUDE.md' (read_file 'CLAUDE.md') to find existing file locations before creating new ones.
+- After implementing new key files (models, routes, services, migrations), add them to the 'Key File Paths' section in CLAUDE.md via write_files.
 
 Call write_files with ALL implemented files (complete, not just changed parts) and a summary.
 """

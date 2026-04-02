@@ -20,7 +20,7 @@ import config
 from clients import DashboardClient, OllamaClient
 from core import ROLES
 from dtypes import Action, Status
-from event_loop import run_loop
+from event_loop import run_loop, run_step
 from orchestrator import show_board
 
 
@@ -67,6 +67,21 @@ def kick_cmd(task_id: int) -> None:
         labels.append(Action.TODO)
     db.set_labels(task_id, labels)
     config.console.print(f"[green]Task #{task_id} moved to architect + action:todo.[/green]")
+
+
+@cli.command("step")
+@click.argument("task_id", type=int)
+def step_cmd(task_id: int) -> None:
+    """Run the current pipeline step for a task once and exit.
+
+    Fetches TASK_ID, checks its status + action label, runs the matching
+    agent handler, and returns. Output is streamed directly to the terminal.
+
+    Use 'board' to see which step each task is waiting on.
+    """
+    _ensure_backends()
+    _sync_agents()
+    run_step(task_id)
 
 
 @cli.command("suggestions")

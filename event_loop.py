@@ -15,6 +15,7 @@ State machine:
 """
 import json
 import re
+import shutil
 import time
 import traceback
 from pathlib import Path
@@ -23,7 +24,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
-from agents import ClaudeAgent, DevAgent, PMAgent, PMAnalysisAgent, TestAgent
+from agents import ClaudeAgent, DevAgent, PMAgent, TestAgent
 from clients import DashboardClient
 from core import get_role_for_task
 from dtypes import Action, LabelPrefix, Status
@@ -46,6 +47,27 @@ def _refresh_agent_cache() -> None:
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
+
+def run_step(task_id: int) -> None:
+    """Process a single step for the given task and return. Used by the step CLI command."""
+    _refresh_agent_cache()
+    task = _db.get_task(task_id)
+    action = _get_action(task)
+    if action is None:
+        config.console.print(
+            f"[yellow]Task #{task_id} has no action label (action:todo or action:review). "
+            f"Nothing to do.[/yellow]"
+        )
+        return
+    active_statuses = (Status.ARCHITECT, Status.DEVELOP, Status.TESTING)
+    if task["status"] not in active_statuses:
+        config.console.print(
+            f"[yellow]Task #{task_id} is in '{task['status']}' — "
+            f"must be in {active_statuses} to run a step.[/yellow]"
+        )
+        return
+    _process_task(task)
+
 
 def run_loop(poll_interval: int = config.EVENT_LOOP_POLL_INTERVAL) -> None:
     """Synchronous polling loop — process one task at a time, forever."""
@@ -128,6 +150,23 @@ def _process_task(task: dict) -> None:
         _db.move_task(tid, Status.FAILED)
         return
 
+    _open_run_ids: list[int] = []
+    _orig_create_run = _db.create_run
+
+    def _tracked_create_run(task_id, agent_id, pipeline_type="dev_team"):
+        run_id = _orig_create_run(task_id, agent_id, pipeline_type)
+        if run_id >= 0:
+            _open_run_ids.append(run_id)
+        return run_id
+
+    def _tracked_update_run(run_id, *args, **kwargs):
+        if run_id in _open_run_ids:
+            _open_run_ids.remove(run_id)
+        return _db.__class__.update_run(_db, run_id, *args, **kwargs)
+
+    _db.create_run = _tracked_create_run
+    _db.update_run = _tracked_update_run
+
     try:
         if status == Status.ARCHITECT and action == "todo":
             _handle_architect_todo(task)
@@ -146,9 +185,14 @@ def _process_task(task: dict) -> None:
     except Exception as exc:
         console.print(f"[red]Exception processing #{tid}: {exc}[/red]")
         _save_error_log(task, exc)
+        for run_id in _open_run_ids:
+            _db.__class__.update_run(_db, run_id, "failed", error_message=str(exc))
         _replace_action(task, None)
         _add_label(task, f"{LabelPrefix.ERROR}exception")
         _db.move_task(tid, Status.FAILED)
+    finally:
+        _db.create_run = _orig_create_run
+        _db.update_run = _db.__class__.update_run.__get__(_db)
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -157,7 +201,7 @@ def _handle_architect_todo(task: dict) -> None:
     """Run ClaudeAgent, save output, set action:review for PM."""
     console = config.console
     run_id = _db.create_run(task["id"], _agent_id_cache.get("architect:design"), "architect")
-    result = ClaudeAgent("architect").run(task)
+    result = ClaudeAgent("architect:design").run(task)
 
     if not result or not result.files:
         console.print("[red]Architect produced no output.[/red]")
@@ -212,7 +256,7 @@ def _handle_architect_review(task: dict) -> None:
                     subtasks[idx]["description"] = mod["description"]
 
         subtask_ids = []
-        for st in subtasks:
+        for position, st in enumerate(subtasks):
             sid = _db.create_task(
                 title=st["title"],
                 description=st["description"],
@@ -220,9 +264,10 @@ def _handle_architect_review(task: dict) -> None:
                 priority=st.get("priority", task["priority"]),
                 labels=st.get("labels", ["developer"]) + [Action.TODO],
                 parent_task_id=task["id"],
+                queue_position=position,
             )
             subtask_ids.append(sid)
-            console.print(f"  [green]Created subtask #{sid}:[/green] {st['title']}")
+            console.print(f"  [green]Created subtask #{sid} (queue pos {position}):[/green] {st['title']}")
 
         for st_id in subtask_ids:
             _save_context(st_id, "skeleton_files", files)
@@ -426,7 +471,8 @@ def _handle_testing_review(task: dict) -> None:
             _db.move_task(task["id"], Status.DONE)
             _db.update_run(run_id, "completed", output_summary=f"Approved — task done. SHA: {ci_result_raw.get('sha', '')}")
             console.print(f"[bold green]✓ Task #{task['id']} done![/bold green]")
-            PMAnalysisAgent().run(task["id"])
+            _update_claude_md(task, files, summary)
+            PMAgent().run_analysis(task["id"])
             if task.get("parent_task_id"):
                 _check_single_parent(task["parent_task_id"])
         else:
@@ -564,10 +610,31 @@ def _load_context(task_id: int, key: str):
 
 def _clear_context(task_id: int) -> None:
     """Remove all context for a completed task."""
-    import shutil
     d = config.CONTEXT_DIR / str(task_id)
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _update_claude_md(task: dict, files: list[dict], summary: str) -> None:
+    """Append a brief task-completion note to the target project's CLAUDE.md."""
+    claude_md = config.ROOT / "CLAUDE.md"
+    if not claude_md.exists():
+        return
+    file_list = "\n".join(f"  - {f['path']}" for f in files[:12])
+    if len(files) > 12:
+        file_list += f"\n  - … ({len(files) - 12} more)"
+    note = (
+        f"\n\n<!-- dev_team: task #{task['id']} completed -->\n"
+        f"## [{task['title']}] — done\n"
+        f"{summary.strip()}\n\n"
+        f"Files changed:\n{file_list}\n"
+    )
+    try:
+        with claude_md.open("a", encoding="utf-8") as f:
+            f.write(note)
+        config.console.print(f"[dim]  CLAUDE.md updated with task #{task['id']} notes.[/dim]")
+    except Exception as e:
+        config.console.print(f"[yellow]  Could not update CLAUDE.md: {e}[/yellow]")
 
 
 def _save_error_log(task: dict, exc: Exception) -> None:

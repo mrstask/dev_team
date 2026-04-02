@@ -39,7 +39,7 @@ class DashboardClient:
         comment     = review.get("overall_comment", "")
         separator   = "\n\n---\nREVIEW FEEDBACK:\n"
         # Strip any previous feedback block before appending fresh one
-        base_desc = task.get("description", "")
+        base_desc = task.get("description") or ""
         if "---\nREVIEW FEEDBACK:" in base_desc:
             base_desc = base_desc[:base_desc.index("---\nREVIEW FEEDBACK:")].rstrip()
         new_desc = f"{base_desc}{separator}{issues_text}\n\nOverall: {comment}"
@@ -62,6 +62,7 @@ class DashboardClient:
         priority: str,
         labels: list[str],
         parent_task_id: int | None = None,
+        queue_position: int | None = None,
     ) -> int:
         """Create a new task in the dashboard. Returns the new task ID."""
         payload = {
@@ -75,15 +76,26 @@ class DashboardClient:
         }
         if parent_task_id is not None:
             payload["parent_task_id"] = parent_task_id
+        if queue_position is not None:
+            payload["queue_position"] = queue_position
         with httpx.Client(timeout=30) as client:
             resp = client.post(f"{self.base_url}/tasks", json=payload)
             resp.raise_for_status()
             return resp.json()["id"]
 
     def update_task(self, task_id: int, updates: dict) -> dict:
-        """Patch arbitrary fields on a task."""
+        """Patch fields on a task. Fetches current state first to satisfy required-field validation."""
+        task = self.get_task(task_id)
+        payload = {
+            "title": task["title"],
+            "status": task["status"],
+            "priority": task["priority"],
+            "assigned_agent_id": task.get("assigned_agent_id"),
+            "labels": task.get("labels", []),
+        }
+        payload.update(updates)
         with httpx.Client(timeout=30) as client:
-            resp = client.patch(f"{self.base_url}/tasks/{task_id}", json=updates)
+            resp = client.patch(f"{self.base_url}/tasks/{task_id}", json=payload)
             resp.raise_for_status()
             return resp.json()
 
