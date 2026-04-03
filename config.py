@@ -13,13 +13,13 @@ load_dotenv(_here / ".env", override=True)
 load_dotenv(_here.parent / ".env")
 
 # ── Project Paths ──────────────────────────────────────────────────────────────
-ROOT = Path(__file__).parent.parent / "habr-agentic"  # target project root
+ROOT = Path(os.getenv("PROJECT_ROOT", Path(__file__).parent.parent / "habr-agentic"))
 BACKEND = ROOT / "backend"
 FRONTEND = ROOT / "frontend"
 
 # Source projects to port from (optional, configure per project)
 SOURCE_PROJECTS: dict[str, Path] = {}
-LANGGRAPH_DASHBOARD = ROOT.parent / "langgraph_dashboard"
+LANGGRAPH_DASHBOARD = Path(os.getenv("LANGGRAPH_DASHBOARD", ROOT.parent / "langgraph_dashboard"))
 
 # ── Step model/backend configuration ──────────────────────────────────────────
 # Edit dev_team/models.json to change which backend and model each step uses.
