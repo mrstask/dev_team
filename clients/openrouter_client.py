@@ -125,8 +125,10 @@ class OpenRouterClient:
         stall = _config.LLM_STALL_TIMEOUT
         # read= handles truly dead connections; meaningful-token stall is tracked below
         http_timeout = httpx.Timeout(connect=30, read=stall, write=30, pool=30)
+        # Stall clock starts from the moment the connection is opened.
+        # Reset on any real model output (content token or tool_call delta).
+        # Keep-alive heartbeats (": OPENROUTER PROCESSING") do NOT reset it.
         last_meaningful = time.monotonic()
-        has_content = False
 
         with httpx.Client(timeout=http_timeout) as client:
             with client.stream(
@@ -142,12 +144,9 @@ class OpenRouterClient:
                         response=resp,
                     )
                 for line in resp.iter_lines():
-                    # Stall detection: heartbeats keep the socket alive but carry no tokens.
-                    # If we've started receiving content but no new token has arrived for
-                    # LLM_STALL_TIMEOUT seconds, treat it as a stall and abort.
-                    if has_content and time.monotonic() - last_meaningful > stall:
+                    if time.monotonic() - last_meaningful > stall:
                         raise httpx.ReadTimeout(
-                            f"No content token for {stall}s (keep-alives ignored)"
+                            f"No model output for {stall}s (keep-alives ignored)"
                         )
 
                     data = _parse_sse_line(line)
@@ -163,11 +162,13 @@ class OpenRouterClient:
                     chunk = delta.get("content") or ""
                     if chunk:
                         full_content += chunk
-                        has_content = True
                         last_meaningful = time.monotonic()
                         yield chunk, None
 
-                    _accumulate_tool_calls(delta.get("tool_calls", []), tool_calls_acc)
+                    tool_call_deltas = delta.get("tool_calls", [])
+                    if tool_call_deltas:
+                        last_meaningful = time.monotonic()
+                    _accumulate_tool_calls(tool_call_deltas, tool_calls_acc)
 
                     if finish in ("stop", "tool_calls", "length"):
                         yield "", self._build_final_response(full_content, tool_calls_acc)
