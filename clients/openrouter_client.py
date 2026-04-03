@@ -1,6 +1,7 @@
 """OpenRouter API client — OpenAI-compatible with streaming and tool calling."""
 import json
 import datetime
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -122,7 +123,11 @@ class OpenRouterClient:
         tool_calls_acc: dict[int, dict] = {}  # index → accumulated call
 
         stall = _config.LLM_STALL_TIMEOUT
+        # read= handles truly dead connections; meaningful-token stall is tracked below
         http_timeout = httpx.Timeout(connect=30, read=stall, write=30, pool=30)
+        last_meaningful = time.monotonic()
+        has_content = False
+
         with httpx.Client(timeout=http_timeout) as client:
             with client.stream(
                 "POST", f"{_BASE_URL}/chat/completions",
@@ -137,6 +142,14 @@ class OpenRouterClient:
                         response=resp,
                     )
                 for line in resp.iter_lines():
+                    # Stall detection: heartbeats keep the socket alive but carry no tokens.
+                    # If we've started receiving content but no new token has arrived for
+                    # LLM_STALL_TIMEOUT seconds, treat it as a stall and abort.
+                    if has_content and time.monotonic() - last_meaningful > stall:
+                        raise httpx.ReadTimeout(
+                            f"No content token for {stall}s (keep-alives ignored)"
+                        )
+
                     data = _parse_sse_line(line)
                     if data is None:
                         continue
@@ -150,6 +163,8 @@ class OpenRouterClient:
                     chunk = delta.get("content") or ""
                     if chunk:
                         full_content += chunk
+                        has_content = True
+                        last_meaningful = time.monotonic()
                         yield chunk, None
 
                     _accumulate_tool_calls(delta.get("tool_calls", []), tool_calls_acc)

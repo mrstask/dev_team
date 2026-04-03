@@ -34,6 +34,7 @@ Rules:
 - Implement EVERY function and method body completely and correctly
 - Keep all existing type annotations, docstrings, and imports — only replace `...` / TODO bodies
 - Use read_file / list_files / search_code to gather context from existing code if needed
+- When reading files, always use the default (large) limit — NEVER pass limit < 5000; read each file fully in 1-2 calls
 - No synchronous I/O — all DB and HTTP calls must be async
 - Already-implemented files in the project for consistency
 

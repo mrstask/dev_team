@@ -72,6 +72,7 @@ Keep tests focused and fast. No real network calls, no real DB files.
 Test one thing per test function. Use descriptive names: test_article_status_enum_values.
 
 Use read_file / list_files / search_code to read the actual source files before writing tests.
+Always use the default (large) limit when reading files — NEVER pass limit < 5000; read each file in full in 1-2 calls.
 Call write_file(path, content) once per file. After ALL files are written, call finish(summary).
 """
 

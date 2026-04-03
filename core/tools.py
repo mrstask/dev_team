@@ -15,8 +15,9 @@ TOOL_SPECS: list[dict] = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a file's contents (up to 12000 chars per call). "
-                "If the file is truncated, use offset to read the next chunk. "
+                "Read a file's contents. Default reads up to 100000 chars — enough for most files in one call. "
+                "NEVER use limit < 5000; always read as much as possible per call to avoid looping. "
+                "If the file is still truncated after one call, use offset to read the next chunk. "
                 "Paths are relative to the project root. "
                 "Use prefix 'lg_dashboard:' to read from the langgraph_dashboard project."
             ),
@@ -37,7 +38,7 @@ TOOL_SPECS: list[dict] = [
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max characters to return (default: 12000).",
+                        "description": "Max characters to return (default: 100000). Never set below 5000.",
                     },
                 },
                 "required": ["path"],
@@ -179,7 +180,7 @@ def _resolve(path: str) -> tuple[Path, str]:
 _SKIP_DIRS = {"__pycache__", "node_modules", ".venv", ".git", ".mypy_cache", "dist", "build"}
 
 
-def read_file(path: str, offset: int = 0, limit: int = 12_000) -> str:
+def read_file(path: str, offset: int = 0, limit: int = 100_000) -> str:
     base, rel = _resolve(path)
     p = base / rel
     if not p.exists():
@@ -193,7 +194,7 @@ def read_file(path: str, offset: int = 0, limit: int = 12_000) -> str:
         remaining = total - offset - len(chunk)
         suffix = (
             f"\n\n[...truncated — showing chars {offset}–{offset + len(chunk)} of {total}. "
-            f"Use offset={offset + len(chunk)} to read more]"
+            f"Call read_file(path='{path}', offset={offset + len(chunk)}) to read the next chunk.]"
             if remaining > 0 else ""
         )
         return chunk + suffix
@@ -357,7 +358,8 @@ def run_tox() -> str:
 
 def dispatch(name: str, args: dict) -> Any:
     if name == "read_file":
-        return read_file(args.get("path", ""), int(args.get("offset", 0)), int(args.get("limit", 12_000)))
+        limit = max(5_000, int(args.get("limit", 100_000)))
+        return read_file(args.get("path", ""), int(args.get("offset", 0)), limit)
     if name == "list_files":
         return list_files(args.get("pattern", ""))
     if name == "search_code":

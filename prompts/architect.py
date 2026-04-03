@@ -16,6 +16,7 @@ DO NOT write any business logic. DO NOT implement algorithms. DO NOT write SQL q
 DO NOT write HTTP calls. Leave all logic as TODO comments for the Developer agent.
 
 Before writing skeletons: use list_files and read_file to explore existing patterns.
+Always read files with the default (large) limit — NEVER pass limit < 5000; read each file in 1-2 calls max.
 Limit exploration to what is strictly necessary — read at most 6-8 files, then write immediately.
 Call write_files once with ALL skeleton files when done.
 
