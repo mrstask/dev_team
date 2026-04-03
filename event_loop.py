@@ -59,6 +59,14 @@ def run_step(task_id: int) -> None:
             f"Nothing to do.[/yellow]"
         )
         return
+    if action == "await-human":
+        config.console.print(
+            f"[yellow]Task #{task_id} is paused at a human gate.[/yellow]\n"
+            f"  python main.py review {task_id}   — inspect output\n"
+            f"  python main.py approve {task_id}  — continue pipeline\n"
+            f"  python main.py reject {task_id} \"feedback\" — retry with feedback"
+        )
+        return
     active_statuses = (Status.ARCHITECT, Status.DEVELOP, Status.TESTING)
     if task["status"] not in active_statuses:
         config.console.print(
@@ -101,13 +109,27 @@ def run_loop(poll_interval: int = config.EVENT_LOOP_POLL_INTERVAL) -> None:
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
 def _fetch_next_actionable() -> dict | None:
-    """Return the highest-priority task that has an action label."""
+    """Return the highest-priority task that has an action label.
+
+    Tasks with action:await-human are recognised but skipped — they are
+    blocked until the developer runs approve/reject from the CLI.
+    """
     tasks = _db.get_tasks()
     active_statuses = (Status.ARCHITECT, Status.DEVELOP, Status.TESTING)
     actionable = [
         t for t in tasks
-        if _get_action(t) is not None and t["status"] in active_statuses
+        if _get_action(t) not in (None, "await-human") and t["status"] in active_statuses
     ]
+    pending_human = [
+        t for t in tasks
+        if _get_action(t) == "await-human" and t["status"] in active_statuses
+    ]
+    if pending_human:
+        ids = ", ".join(f"#{t['id']}" for t in pending_human)
+        config.console.print(
+            f"[dim]  {len(pending_human)} task(s) awaiting human review: {ids}  "
+            f"→ python main.py pending[/dim]"
+        )
     if not actionable:
         _check_parent_completions(tasks)
         return None
@@ -117,12 +139,14 @@ def _fetch_next_actionable() -> dict | None:
 
 
 def _get_action(task: dict) -> str | None:
-    """Extract the action label (todo or review) from a task, if any."""
+    """Extract the action label from a task: todo, review, await-human, or None."""
     for label in task.get("labels", []):
         if label == Action.TODO:
             return "todo"
         if label == Action.REVIEW:
             return "review"
+        if label == Action.AWAIT_HUMAN:
+            return "await-human"
     return None
 
 
@@ -195,6 +219,28 @@ def _process_task(task: dict) -> None:
         _db.update_run = _db.__class__.update_run.__get__(_db)
 
 
+# ── Human gate ───────────────────────────────────────────────────────────────
+
+def _apply_human_gate(task: dict, gate_name: str) -> bool:
+    """If the human gate for this stage is enabled, pause the task and return True.
+
+    The caller must return immediately when this returns True — the task is now
+    blocked at action:await-human until the developer runs approve/reject.
+    Returns False when the gate is off so the caller proceeds normally.
+    """
+    if config.HUMAN_GATES.get(gate_name, False):
+        _replace_action(task, Action.AWAIT_HUMAN)
+        config.console.print(
+            f"\n[bold yellow]⏸  Human gate '{gate_name}'[/bold yellow]  "
+            f"— task [bold]#{task['id']}[/bold] paused.\n"
+            f"  [dim]python main.py review {task['id']}[/dim]   inspect output + spec\n"
+            f"  [dim]python main.py approve {task['id']}[/dim]  continue to next stage\n"
+            f"  [dim]python main.py reject {task['id']} \"feedback\"[/dim]  retry with your notes"
+        )
+        return True
+    return False
+
+
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 def _handle_architect_todo(task: dict) -> None:
@@ -223,6 +269,8 @@ def _handle_architect_todo(task: dict) -> None:
         "subtasks": [s.title for s in result.subtasks],
         "summary": result.summary,
     })
+    if _apply_human_gate(task, "architect_output"):
+        return
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Architect done — {len(result.files)} file(s). Awaiting PM review.[/green]")
 
@@ -338,6 +386,8 @@ def _handle_develop_todo(task: dict) -> None:
         "summary": result.summary,
         "had_previous_files": _load_context(task["id"], "previous_files") is not None,
     })
+    if _apply_human_gate(task, "develop_output"):
+        return
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Developer done — {len(result.files)} file(s). Awaiting PM review.[/green]")
 
@@ -447,6 +497,8 @@ def _handle_testing_todo(task: dict) -> None:
         "sha": ci_result.sha,
         "ci_output_tail": (ci_result.output or "")[-500:],
     })
+    if _apply_human_gate(task, "testing_output"):
+        return
     _replace_action(task, Action.REVIEW)
     console.print(f"[green]Testing done — CI status: {ci_result.status}. Awaiting PM review.[/green]")
 

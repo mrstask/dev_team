@@ -92,6 +92,19 @@ CONTEXT_DIR = _here / "_context"
 EVENT_LOOP_POLL_INTERVAL = 10   # seconds between dashboard polls
 MAX_TASK_RETRIES = 5            # max retries per task before marking failed
 
+# ── Human Gates ───────────────────────────────────────────────────────────
+# Set a gate to True to pause the pipeline after that stage and wait for
+# human approve/reject via: python main.py review/approve/reject <task_id>
+# Set to False to let the pipeline proceed autonomously through that stage.
+HUMAN_GATES: dict[str, bool] = {
+    "architect_output": True,   # pause after architect, before PM review
+    "develop_output":   True,   # pause after developer, before code review + PM
+    "testing_output":   True,   # pause after tests + CI, before PM final review
+}
+
+# ── Specs ─────────────────────────────────────────────────────────────────
+SPECS_DIR = _here / "specs"
+
 # Map task labels → agent role keys
 LABEL_TO_ROLE: dict[str, str] = {
     "architect":          "architect:design",

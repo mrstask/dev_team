@@ -20,9 +20,10 @@ class Status:
 
 
 class Action:
-    TODO = "action:todo"
-    REVIEW = "action:review"
-    PREFIX = "action:"
+    TODO        = "action:todo"
+    REVIEW      = "action:review"
+    AWAIT_HUMAN = "action:await-human"   # paused — waiting for human approve/reject
+    PREFIX      = "action:"
 
 
 class LabelPrefix:
