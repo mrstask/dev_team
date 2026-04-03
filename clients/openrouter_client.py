@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+import config as _config
+
 _BASE_URL = "https://openrouter.ai/api/v1"
 _LOG_DIR  = Path(__file__).parent / "_logs"
 
@@ -101,7 +103,6 @@ class OpenRouterClient:
         messages: list[dict],
         tools: list[dict] | None = None,
         temperature: float = 0.05,
-        timeout: int = 1200,
     ) -> Iterator[tuple[str, dict | None]]:
         """
         Streaming chat. Yields (chunk, None) for each text token and
@@ -120,7 +121,9 @@ class OpenRouterClient:
         full_content: str = ""
         tool_calls_acc: dict[int, dict] = {}  # index → accumulated call
 
-        with httpx.Client(timeout=timeout) as client:
+        stall = _config.LLM_STALL_TIMEOUT
+        http_timeout = httpx.Timeout(connect=30, read=stall, write=30, pool=30)
+        with httpx.Client(timeout=http_timeout) as client:
             with client.stream(
                 "POST", f"{_BASE_URL}/chat/completions",
                 json=payload, headers=self._headers(),

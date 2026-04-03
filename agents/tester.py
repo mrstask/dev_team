@@ -7,7 +7,7 @@ from pathlib import Path
 from rich.panel import Panel
 
 import config
-from core import create_client, run_react_loop
+from core import create_client, create_fallback_client, run_react_loop
 from dtypes import CIResult, FileContent, TestResult
 from prompts import TESTER_AGENT_SYSTEM_PROMPT, TESTER_CI_SYSTEM_PROMPT, TESTER_USER_PROMPT_FOOTER, TESTER_USER_PROMPT_HEADER
 
@@ -15,8 +15,9 @@ from prompts import TESTER_AGENT_SYSTEM_PROMPT, TESTER_CI_SYSTEM_PROMPT, TESTER_
 class TestAgent:
     def __init__(self):
         self.client = create_client("tester")
+        self.fallback_client = create_fallback_client("tester")
 
-    def run(self, task: dict, impl_files: list[dict]) -> TestResult:
+    def run(self, task: dict, impl_files: list[dict], on_loop_complete=None) -> TestResult:
         """Generate pytest tests for the given implementation files."""
         console = config.console
 
@@ -41,8 +42,9 @@ class TestAgent:
 
         raw_files = run_react_loop(
             self.client, messages,
-            max_rounds=8,
+            fallback_client=self.fallback_client,
             on_write_files=_on_write,
+            on_loop_complete=on_loop_complete,
         )
 
         if isinstance(raw_files, list):

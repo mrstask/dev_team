@@ -1,6 +1,6 @@
 """DevAgent — ReAct loop over Ollama/OpenRouter with tool calling."""
 import config
-from core import ROLES, create_client, run_react_loop
+from core import ROLES, create_client, create_fallback_client, run_react_loop
 from dtypes import DeveloperResult, FileContent
 from prompts.developer import (
     DEVELOPER_FEEDBACK_PROMPT,
@@ -22,6 +22,7 @@ class DevAgent:
         self._backend = dev["backend"]
         self.model = model or dev["model"]
         self.client = create_client("developer")
+        self.fallback_client = create_fallback_client("developer")
 
     def run(
         self,
@@ -29,6 +30,7 @@ class DevAgent:
         feedback: str = "",
         skeleton_files: list[dict] | None = None,
         previous_files: list[dict] | None = None,
+        on_loop_complete=None,
     ) -> DeveloperResult | None:
         """ReAct loop: read context -> write files."""
         messages = [
@@ -37,7 +39,7 @@ class DevAgent:
         ]
         config.print_agent_rule(self.role_def["name"], "developer")
 
-        raw = run_react_loop(self.client, messages)
+        raw = run_react_loop(self.client, messages, fallback_client=self.fallback_client, on_loop_complete=on_loop_complete)
         if not raw or not raw.get("files"):
             return None
 

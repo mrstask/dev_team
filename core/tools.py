@@ -1,5 +1,6 @@
 """Tool implementations + Ollama function call specs for the dev agents."""
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,8 @@ TOOL_SPECS: list[dict] = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a file's full contents. "
+                "Read a file's contents (up to 12000 chars per call). "
+                "If the file is truncated, use offset to read the next chunk. "
                 "Paths are relative to the project root. "
                 "Use prefix 'lg_dashboard:' to read from the langgraph_dashboard project."
             ),
@@ -28,7 +30,15 @@ TOOL_SPECS: list[dict] = [
                             "'backend/app/models/article.py', "
                             "'lg_dashboard:frontend/src/lib/api.ts'"
                         ),
-                    }
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Character offset to start reading from (default: 0). Use when a previous read was truncated.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max characters to return (default: 12000).",
+                    },
                 },
                 "required": ["path"],
             },
@@ -114,6 +124,22 @@ TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "run_tox",
+            "description": (
+                "Run the project test suite (tox if available, else pytest). "
+                "Returns pass/fail status and the last 60 lines of output. "
+                "Use this to verify your implementation before calling finish()."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "finish",
             "description": (
                 "Signal that all files have been written and the task is complete. "
@@ -153,7 +179,7 @@ def _resolve(path: str) -> tuple[Path, str]:
 _SKIP_DIRS = {"__pycache__", "node_modules", ".venv", ".git", ".mypy_cache", "dist", "build"}
 
 
-def read_file(path: str) -> str:
+def read_file(path: str, offset: int = 0, limit: int = 12_000) -> str:
     base, rel = _resolve(path)
     p = base / rel
     if not p.exists():
@@ -162,9 +188,15 @@ def read_file(path: str) -> str:
         return f"ERROR: Not a file: {path}"
     try:
         content = p.read_text(encoding="utf-8")
-        if len(content) > 12_000:
-            content = content[:12_000] + f"\n\n[...truncated — {len(content)} total chars]"
-        return content
+        total = len(content)
+        chunk = content[offset:offset + limit]
+        remaining = total - offset - len(chunk)
+        suffix = (
+            f"\n\n[...truncated — showing chars {offset}–{offset + len(chunk)} of {total}. "
+            f"Use offset={offset + len(chunk)} to read more]"
+            if remaining > 0 else ""
+        )
+        return chunk + suffix
     except Exception as e:
         return f"ERROR reading {path}: {e}"
 
@@ -277,11 +309,55 @@ def write_files(files: list[dict] | str, summary: str) -> dict:
 
 
 
+def run_tox() -> str:
+    """Run tox (or pytest fallback). Returns status + last 60 lines of output."""
+    tox_bin = shutil.which("tox")
+
+    def _find_pytest() -> Path | None:
+        candidates = [
+            config.BACKEND / ".venv" / "bin" / "pytest",
+            config.BACKEND / "venv" / "bin" / "pytest",
+            *sorted((config.ROOT / ".tox").glob("*/bin/pytest")),
+        ]
+        return next((p for p in candidates if p.exists()), None)
+
+    if tox_bin:
+        cmd = [tox_bin]
+        cwd = str(config.ROOT)
+        label = "tox"
+    else:
+        found = _find_pytest()
+        pytest_bin = str(found) if found else (shutil.which("pytest") or "pytest")
+        cmd = [pytest_bin, "tests/", "-v", "--tb=short"]
+        cwd = str(config.BACKEND)
+        label = f"pytest ({pytest_bin})"
+
+    config.console.print(f"\n[dim]  run_tox: running {label} ...[/dim]")
+    try:
+        process = subprocess.Popen(
+            cmd, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        output = ""
+        for line in process.stdout:
+            output += line
+            config.console.print(f"  [dim]{line.rstrip()}[/dim]")
+        process.wait(timeout=300)
+        last_lines = "\n".join(output.splitlines()[-60:])
+        status = "PASSED" if process.returncode == 0 else "FAILED"
+        return f"tox {status}\n\n{last_lines}"
+    except FileNotFoundError:
+        return f"ERROR: '{cmd[0]}' not found. Install tox or pytest in the backend venv."
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 
 def dispatch(name: str, args: dict) -> Any:
     if name == "read_file":
-        return read_file(args.get("path", ""))
+        return read_file(args.get("path", ""), int(args.get("offset", 0)), int(args.get("limit", 12_000)))
     if name == "list_files":
         return list_files(args.get("pattern", ""))
     if name == "search_code":
@@ -297,5 +373,9 @@ def dispatch(name: str, args: dict) -> Any:
         return finish(args.get("summary", ""))
     if name == "write_files":
         return write_files(args.get("files", []), args.get("summary", ""))
+    if name == "run_tox":
+        return run_tox()
+    if name == "run_tests":
+        return "ERROR: Use run_tox instead — it runs tox (or pytest) and returns output."
     return f"ERROR: Unknown tool '{name}'"
 

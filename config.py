@@ -73,7 +73,9 @@ def print_agent_rule(name: str, step_name: str, *, extra: str = "") -> None:
     console.print(Rule(parts, style=style))
 
 # ── Agent Behaviour ────────────────────────────────────────────────────────────
-MAX_TOOL_ROUNDS = 25       # Max ReAct rounds before giving up
+MAX_TOOL_ROUNDS = 50       # Max ReAct rounds before giving up
+LLM_STALL_TIMEOUT = 120    # Seconds to wait for any chunk before retrying the request
+LLM_STALL_MAX_RETRIES = 3  # Max stall retries per round before giving up
 
 # When True, saves the developer's output files on reviewer rejection and passes
 # them back as context on the next retry — developer fixes in-place instead of

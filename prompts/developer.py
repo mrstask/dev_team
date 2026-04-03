@@ -7,7 +7,10 @@ DEVELOPER_TASK_PROMPT = (
     "1. Use read_file / list_files / search_code to gather context if needed.\n"
     "2. Implement the task completely and correctly.\n"
     "3. Call write_file(path, content) ONCE PER FILE — one file per call, not all at once.\n"
-    "4. After ALL files are written, call finish(summary) to complete the task.\n"
+    "4. After ALL files are written, call finish(summary) to complete the task.\n\n"
+    "After writing all files you MAY call run_tox() to verify correctness.\n"
+    "Once tox passes (or you choose to skip), call finish() immediately.\n"
+    "Do NOT loop trying to fix test failures indefinitely — max 2 tox attempts.\n"
 )
 
 DEVELOPER_SKELETON_HEADER = "\nSkeleton files from Architect ({count} files):\n"
@@ -37,12 +40,13 @@ Rules:
 CRITICAL — writing files:
 - Call write_file(path, content) ONCE PER FILE. Never bundle multiple files into one call.
 - After writing ALL files, call finish(summary) — this signals task completion.
+- After writing ALL files you MAY call run_tox() once to verify. Max 2 tox attempts — then call finish().
 - Paths MUST be relative to the project root: start with 'backend/', 'frontend/', 'alembic/', etc.
 - NEVER include the project folder name in paths — e.g. WRONG: 'habr-agentic/backend/app/models/foo.py'
 - CORRECT: 'backend/app/models/foo.py'
 - If you see any path starting with 'habr-agentic/', 'habr_agentic/', or similar project names — remove that prefix.
 - Read 'CLAUDE.md' (read_file 'CLAUDE.md') to find existing file locations before creating new ones.
-- After implementing new key files (models, routes, services, migrations), add them to the 'Key File Paths' section in CLAUDE.md via write_files.
+- Do NOT update CLAUDE.md — that is handled automatically after task completion.
 
 Call write_files with ALL implemented files (complete, not just changed parts) and a summary.
 """

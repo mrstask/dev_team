@@ -308,11 +308,15 @@ def _handle_develop_todo(task: dict) -> None:
     skeleton_files = _load_context(task["id"], "skeleton_files")
     previous_files = _load_context(task["id"], "previous_files")
 
+    def _save_developer_loop(messages: list[dict]) -> None:
+        _db.log_event(task["id"], "react_loop:developer", _compact_messages(messages))
+
     result = DevAgent(role).run(
         task,
         feedback="",
         skeleton_files=skeleton_files if not previous_files else None,
         previous_files=previous_files,
+        on_loop_complete=_save_developer_loop,
     )
 
     if not result or not result.files:
@@ -416,7 +420,10 @@ def _handle_testing_todo(task: dict) -> None:
     files = ctx["files"]
     summary = ctx.get("summary", "")
 
-    test_result = TestAgent().run(task, files)
+    def _save_tester_loop(messages: list[dict]) -> None:
+        _db.log_event(task["id"], "react_loop:tester", _compact_messages(messages))
+
+    test_result = TestAgent().run(task, files, on_loop_complete=_save_tester_loop)
     all_files = files + [f.model_dump() for f in test_result.files]
 
     ci_result = TestAgent().run_ci(task, all_files, summary)
@@ -641,3 +648,31 @@ def _save_error_log(task: dict, exc: Exception) -> None:
     """Save exception traceback to context dir."""
     path = _context_dir(task["id"]) / "error.log"
     path.write_text(traceback.format_exc(), encoding="utf-8")
+
+
+def _compact_messages(messages: list[dict], max_content: int = 2000) -> dict:
+    """Truncate message content so the payload fits in an activity event."""
+    compacted = []
+    for msg in messages:
+        m = {"role": msg.get("role", "")}
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            m["content"] = content[:max_content] + f" …[+{len(content) - max_content}]" if len(content) > max_content else content
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            m["tool_calls"] = [
+                {
+                    "function": {
+                        "name": tc.get("function", {}).get("name"),
+                        "arguments": (
+                            tc["function"]["arguments"][:max_content] + " …[truncated]"
+                            if isinstance(tc.get("function", {}).get("arguments"), str)
+                            and len(tc["function"]["arguments"]) > max_content
+                            else tc.get("function", {}).get("arguments")
+                        ),
+                    }
+                }
+                for tc in tool_calls
+            ]
+        compacted.append(m)
+    return {"round_count": sum(1 for m in messages if m.get("role") == "assistant"), "messages": compacted}

@@ -23,7 +23,7 @@ CRITICAL — file paths:
 - Paths must be relative to the project root: start with 'backend/', 'frontend/', etc.
 - NEVER include the project folder name — WRONG: 'habr-agentic/backend/foo.py', CORRECT: 'backend/foo.py'
 - Read CLAUDE.md (read_file 'CLAUDE.md') for the canonical list of existing key files and their paths.
-- After completing a task that creates new key files, add them to the 'Key File Paths' section in CLAUDE.md.
+- Do NOT update CLAUDE.md — that is handled automatically after task completion.
 """
 
 ARCHITECT_DEV_REVIEW_SYSTEM_PROMPT = """/no_think

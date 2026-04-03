@@ -1,18 +1,22 @@
 {
   "architect": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus-preview:free"
+    "model": "qwen/qwen3.6-plus:free",
+    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
   },
   "pm": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus-preview:free"
+    "model": "qwen/qwen3.6-plus:free",
+    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
   },
   "developer": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus-preview:free"
+    "model": "qwen/qwen3.6-plus:free",
+    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
   },
   "tester": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus-preview:free"
+    "model": "qwen/qwen3.6-plus:free",
+    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
   }
 }

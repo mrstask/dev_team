@@ -4,11 +4,12 @@ Used by DevAgent and TestAgent to avoid duplicating the core loop logic.
 """
 import json
 import re
+import time
 from collections.abc import Callable
 
 import config
 from clients import OllamaClient, OpenRouterClient
-from .llm import stream_chat_with_display
+from .llm import LLMRateLimitError, LLMStallError, stream_chat_with_display
 from .tools import TOOL_SPECS, dispatch
 
 
@@ -21,8 +22,9 @@ def run_react_loop(
     max_rounds: int = config.MAX_TOOL_ROUNDS,
     tools: list[dict] | None = None,
     temperature: float = 0.05,
-    timeout: int = config.OLLAMA_TIMEOUT,
+    fallback_client: OllamaClient | OpenRouterClient | None = None,
     on_write_files: Callable[[dict], dict | list | None] | None = None,
+    on_loop_complete: Callable[[list[dict]], None] | None = None,
 ) -> dict | None:
     """
     Generic ReAct loop with tool calling + text-based fallback.
@@ -33,7 +35,6 @@ def run_react_loop(
         max_rounds: Max iterations before giving up.
         tools: Tool specs for function calling. Defaults to TOOL_SPECS.
         temperature: LLM temperature.
-        timeout: Per-request timeout.
         on_write_files: Optional callback when write_files is called.
             Receives the raw result dict. Return value replaces the default
             return. If None, returns the write_files result directly.
@@ -48,14 +49,35 @@ def run_react_loop(
     for round_num in range(1, max_rounds + 1):
         console.print(f"[dim]  round {round_num}/{max_rounds}[/dim]")
 
-        try:
-            resp, content = stream_chat_with_display(
-                client, messages,
-                tools=tools, temperature=temperature, timeout=timeout,
-            )
-        except Exception as e:
-            console.print(f"[red]  LLM error: {e}[/red]")
-            return None
+        stall_attempt = 0
+        while True:
+            try:
+                resp, content = stream_chat_with_display(
+                    client, messages,
+                    tools=tools, temperature=temperature,
+                    fallback_client=fallback_client,
+                )
+                break
+            except LLMRateLimitError as e:
+                # Both primary and fallback are rate-limited — wait then retry
+                console.print(f"[yellow]  Both models rate-limited — waiting {e.retry_after}s…[/yellow]")
+                for remaining in range(e.retry_after, 0, -10):
+                    console.print(f"  [dim]retrying in {remaining}s…[/dim]", end="\r")
+                    time.sleep(min(10, remaining))
+                console.print()
+            except LLMStallError as e:
+                stall_attempt += 1
+                if stall_attempt >= config.LLM_STALL_MAX_RETRIES:
+                    console.print(f"[red]  LLM stalled {config.LLM_STALL_MAX_RETRIES} times — giving up.[/red]")
+                    if on_loop_complete:
+                        on_loop_complete(messages)
+                    return None
+                console.print(f"[yellow]  LLM stalled ({e}). Retrying {stall_attempt}/{config.LLM_STALL_MAX_RETRIES}…[/yellow]")
+            except Exception as e:
+                console.print(f"[red]  LLM error: {e}[/red]")
+                if on_loop_complete:
+                    on_loop_complete(messages)
+                return None
 
         _print_reasoning(content)
 
@@ -73,6 +95,8 @@ def run_react_loop(
             if content:
                 from rich.panel import Panel
                 console.print(Panel(content[:600], title="Agent text (no files)", border_style="yellow"))
+            if on_loop_complete:
+                on_loop_complete(messages)
             return None
 
         console.print()
@@ -81,9 +105,13 @@ def run_react_loop(
         for call in tool_calls:
             done, result = _dispatch_tool_call(call, messages, on_write_files)
             if done:
+                if on_loop_complete:
+                    on_loop_complete(messages)
                 return result
 
     console.print(f"[red]Max rounds ({max_rounds}) reached without write_files.[/red]")
+    if on_loop_complete:
+        on_loop_complete(messages)
     return None
 
 

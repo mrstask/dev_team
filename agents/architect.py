@@ -15,7 +15,7 @@ from rich.panel import Panel
 
 import config
 from clients import ClaudeClient
-from core import ROLES, create_client, parse_json_response, run_react_loop, stream_chat_with_display
+from core import ROLES, create_client, create_fallback_client, parse_json_response, run_react_loop, stream_chat_with_display
 from dtypes import ArchitectResult, FileContent, ReviewResult, SubtaskProposal
 from prompts import ARCHITECT_USER_PROMPT, REVIEWER_USER_PROMPT_HEADER, STAGING_INSTRUCTION
 
@@ -30,6 +30,7 @@ class ArchitectAgent:
         self.role = role
         self.role_def = ROLES[role]
         self.client = create_client("architect")
+        self.fallback_client = create_fallback_client("architect")
 
     def run(self, task: dict, feedback: str = "", skeleton_files: list[dict] | None = None) -> ArchitectResult | None:
         config.print_agent_rule(self.role_def["name"], "architect")
@@ -85,7 +86,7 @@ class ArchitectAgent:
         raw = run_react_loop(
             self.client,
             messages,
-            max_rounds=10,
+            fallback_client=self.fallback_client,
         )
 
         if not raw:
@@ -131,7 +132,7 @@ class ArchitectAgent:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
-                timeout=240,
+                fallback_client=self.fallback_client,
             )
             content = final_resp.get("message", {}).get("content", "")
             return ReviewResult(**parse_json_response(content))

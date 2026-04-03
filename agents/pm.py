@@ -5,7 +5,7 @@ from rich.rule import Rule
 
 import config
 from clients import DashboardClient
-from core import create_client, parse_json_response, stream_chat_with_display
+from core import create_client, create_fallback_client, parse_json_response, stream_chat_with_display
 from dtypes import ReviewResult
 from prompts import (
     PM_ARCHITECT_REVIEW,
@@ -27,6 +27,7 @@ class PMAgent:
 
     def __init__(self):
         self.client = create_client("pm")
+        self.fallback_client = create_fallback_client("pm")
 
     # ── User story ────────────────────────────────────────────────────────────
 
@@ -41,7 +42,7 @@ class PMAgent:
                     {"role": "user", "content": raw_requirement},
                 ],
                 temperature=0.3,
-                timeout=120,
+                fallback_client=self.fallback_client,
             )
             content = final_resp.get("message", {}).get("content", "")
             return parse_json_response(content)
@@ -71,7 +72,7 @@ class PMAgent:
                     {"role": "user", "content": self._build_analysis_prompt(task, events)},
                 ],
                 temperature=0.2,
-                timeout=300,
+                fallback_client=self.fallback_client,
             )
             content = final_resp.get("message", {}).get("content", "")
             raw = parse_json_response(content)
@@ -179,7 +180,7 @@ class PMAgent:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.2,
-                timeout=300,
+                fallback_client=self.fallback_client,
             )
             content = final_resp.get("message", {}).get("content", "")
             raw = parse_json_response(content)
