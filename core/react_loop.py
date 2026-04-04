@@ -178,6 +178,10 @@ def _dispatch_tool_call(
         config.console.print(f"  [green]✓[/green] {n} file(s) written to disk, pending PM review")
         return True, on_write_files(result) if on_write_files else result
 
+    if name == "submit_research" and isinstance(result, dict) and result.get("status") == "pending_review":
+        config.console.print("  [green]✓[/green] Research findings submitted")
+        return True, on_write_files(result) if on_write_files else result
+
     result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
     _print_tool_result(name, result_str)
     tool_msg: dict = {"role": "tool", "content": result_str}

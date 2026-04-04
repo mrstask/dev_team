@@ -1,4 +1,9 @@
 {
+  "researcher": {
+    "backend": "openrouter",
+    "model": "qwen/qwen3.6-plus:free",
+    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
+  },
   "architect": {
     "backend": "openrouter",
     "model": "qwen/qwen3.6-plus:free",

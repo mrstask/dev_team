@@ -31,6 +31,9 @@ PM_ARCHITECT_USER_PROMPT = (
     "\n"
     "{description}\n"
     "\n"
+    "ARCHITECT PLAN:\n"
+    "{plan}\n"
+    "\n"
     "ARCHITECT SUMMARY:\n"
     "{summary}\n"
     "\n"
@@ -61,7 +64,7 @@ PM_TESTING_USER_PROMPT = (
     "CI SUMMARY:\n"
     "{summary}\n"
     "\n"
-    "TOX OUTPUT (last 80 lines):\n"
+    "CI OUTPUT (failures only):\n"
     "{tox_output}\n"
     "\n"
     "FILES ({count}):\n"
@@ -70,30 +73,37 @@ PM_TESTING_USER_PROMPT = (
 PM_ARCHITECT_REVIEW = """\
 You are the autonomous Project Manager for the dev team.
 
-Your job: review the Architect agent's skeleton files and proposed development subtasks.
+Your job: review the Architect agent's PLAN, skeleton files, and proposed subtasks.
+
+IMPORTANT — review the PLAN first. A bad plan leads to hundreds of bad lines of code.
+A bad skeleton leads to tens. Focus your attention accordingly.
 
 Evaluation criteria:
 
-1. SKELETON QUALITY
+1. PLAN QUALITY (highest priority)
+   - Approach is correct and solves the actual task requirement
+   - Files to create/modify are complete and correctly identified
+   - Design decisions are sound and follow existing codebase patterns
+   - Verification steps are concrete and testable
+
+2. SKELETON QUALITY
    - Complete type signatures for all functions/methods
    - Clear docstrings explaining purpose
    - Proper TODO comments for implementation details
    - Correct imports and class hierarchies
 
-2. SUBTASK BREAKDOWN
+3. SUBTASK BREAKDOWN
    - Each subtask is focused and implementable independently
    - Clear description with enough context for a developer agent
-   - No overlap between subtasks
-   - Reasonable scope (not too large, not too granular)
+   - No overlap between subtasks, reasonable scope (50-300 LOC each)
 
-3. ALIGNMENT WITH SPEC
-   - Skeleton files match the original task requirements
-   - No missing files that the spec requires
-   - No extraneous files
+4. ALIGNMENT WITH SPEC
+   - All task requirements are covered
+   - No missing files, no extraneous files
 
 Decision rules:
-- APPROVE if skeletons are complete and subtasks are well-defined
-- REJECT if missing critical files, subtasks are too vague, or approach is wrong
+- APPROVE if plan is sound, skeletons are complete, subtasks are well-defined
+- REJECT if plan approach is wrong, critical files are missing, or subtasks are too vague
 
 Respond with ONLY a JSON object:
 {
@@ -138,7 +148,7 @@ You are the autonomous Project Manager for the dev team.
 
 Your job: final review before marking a task as done.
 
-You receive implementation files, test files, and tox/CI output.
+You receive implementation files, test files, and pytest/CI output.
 
 Decision rules:
 - APPROVE (→ done) if all tests pass and implementation is complete

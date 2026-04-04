@@ -140,9 +140,10 @@ class PMAgent:
         files: list[dict],
         subtasks: list[dict],
         summary: str,
+        plan: str = "",
     ) -> ReviewResult:
-        """Review architect skeleton files and proposed subtasks."""
-        prompt = self._build_architect_prompt(task, files, subtasks, summary)
+        """Review architect plan, skeleton files, and proposed subtasks."""
+        prompt = self._build_architect_prompt(task, files, subtasks, summary, plan=plan)
         return self._run_review("Architect Review", PM_ARCHITECT_REVIEW, prompt)
 
     def run_developer_review(
@@ -194,12 +195,13 @@ class PMAgent:
 
     @staticmethod
     def _build_architect_prompt(
-        task: dict, files: list[dict], subtasks: list[dict], summary: str,
+        task: dict, files: list[dict], subtasks: list[dict], summary: str, plan: str = "",
     ) -> str:
         lines = [PM_ARCHITECT_USER_PROMPT.format(
             title=task["title"],
             priority=task["priority"],
             description=task.get("description", "No description."),
+            plan=plan or "(no plan provided)",
             summary=summary,
             count=len(files),
         )]

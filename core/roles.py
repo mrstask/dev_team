@@ -1,5 +1,6 @@
 """Agent role definitions — namespaced by agent: pm, architect, developer, tester."""
 import config
+from prompts.research import RESEARCH_SYSTEM_PROMPT
 from prompts import (
     ARCHITECT_DEV_REVIEW_SYSTEM_PROMPT,
     ARCHITECT_SYSTEM_PROMPT,
@@ -38,6 +39,14 @@ ROLES: dict[str, dict] = {
         "description": "Final review of testing and CI results before marking a task done",
         "system_prompt": PM_TESTING_REVIEW,
         "step": "pm",
+    },
+
+    # ── Researcher ───────────────────────────────────────────────────────────
+    "researcher:explore": {
+        "name": "Research Agent",
+        "description": "Read-only codebase exploration producing a compact research artifact",
+        "system_prompt": RESEARCH_SYSTEM_PROMPT,
+        "step": "researcher",
     },
 
     # ── Architect ─────────────────────────────────────────────────────────────

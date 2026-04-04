@@ -401,5 +401,46 @@ def dispatch(name: str, args: dict) -> Any:
         return run_pylint()
     if name in ("run_tox", "run_tox_lint", "run_tests"):
         return "ERROR: Use run_pytest (tests) or run_pylint (lint) instead."
+    if name == "submit_research":
+        return submit_research(args.get("findings", ""))
     return f"ERROR: Unknown tool '{name}'"
+
+
+# ── Research tools ─────────────────────────────────────────────────────────────
+
+def submit_research(findings: str) -> dict:
+    """Terminal tool for ResearchAgent — wraps findings in a pending_review envelope."""
+    return {"status": "pending_review", "files": [], "summary": findings, "written": []}
+
+
+_RESEARCH_TOOL_NAMES = {"read_file", "list_files", "search_code"}
+
+RESEARCH_TOOL_SPECS: list[dict] = [
+    s for s in TOOL_SPECS if s["function"]["name"] in _RESEARCH_TOOL_NAMES
+] + [
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_research",
+            "description": (
+                "Submit your research findings. Call this when you have gathered enough "
+                "information about the codebase. Do NOT call any other tool after this."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "findings": {
+                        "type": "string",
+                        "description": (
+                            'JSON string with keys: "relevant_files" (list[str]), '
+                            '"patterns" (list[str]), "data_flow" (str), '
+                            '"warnings" (list[str]), "summary" (str)'
+                        ),
+                    }
+                },
+                "required": ["findings"],
+            },
+        },
+    },
+]
 

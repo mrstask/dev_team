@@ -17,7 +17,7 @@ import config
 from clients import ClaudeClient
 from core import ROLES, create_client, create_fallback_client, parse_json_response, run_react_loop, stream_chat_with_display
 from dtypes import ArchitectResult, FileContent, ReviewResult, SubtaskProposal
-from prompts import ARCHITECT_USER_PROMPT, REVIEWER_USER_PROMPT_HEADER, STAGING_INSTRUCTION
+from prompts import ARCHITECT_RESEARCH_CONTEXT, ARCHITECT_USER_PROMPT, REVIEWER_USER_PROMPT_HEADER, STAGING_INSTRUCTION
 
 # Staging dir — used by claude-code backend; ReAct backend writes directly
 STAGING_DIR: Path = config.ROOT / "dev_team" / "_staging"
@@ -32,24 +32,34 @@ class ArchitectAgent:
         self.client = create_client("architect")
         self.fallback_client = create_fallback_client("architect")
 
-    def run(self, task: dict, feedback: str = "", skeleton_files: list[dict] | None = None) -> ArchitectResult | None:
+    def run(
+        self,
+        task: dict,
+        feedback: str = "",
+        skeleton_files: list[dict] | None = None,
+        research: dict | None = None,
+    ) -> ArchitectResult | None:
         config.print_agent_rule(self.role_def["name"], "architect")
 
         prompt = self._build_prompt(task, feedback, skeleton_files)
+        system_prompt = self.role_def["system_prompt"]
+        if research:
+            system_prompt = system_prompt.rstrip() + _format_research_context(research)
 
         if isinstance(self.client, ClaudeClient):
-            return self._run_claude_code(prompt, task)
-        return self._run_react(prompt, task)
+            return self._run_claude_code(prompt, task, system_prompt=system_prompt)
+        return self._run_react(prompt, task, system_prompt=system_prompt)
 
     # ── Execution strategies ───────────────────────────────────────────────────
 
-    def _run_claude_code(self, prompt: str, task: dict) -> ArchitectResult | None:
+    def _run_claude_code(self, prompt: str, task: dict, system_prompt: str | None = None) -> ArchitectResult | None:
         """Run via Claude Code SDK — agent has native file system access."""
         if STAGING_DIR.exists():
             shutil.rmtree(STAGING_DIR)
         STAGING_DIR.mkdir(parents=True)
 
-        system_prompt = self.role_def["system_prompt"].strip() + STAGING_INSTRUCTION
+        base = system_prompt or self.role_def["system_prompt"]
+        system_prompt = base.strip() + STAGING_INSTRUCTION
         model = config.step("architect")["model"]
 
         try:
@@ -76,10 +86,10 @@ class ArchitectAgent:
         summary = response.summary or f"Produced {len(files)} skeleton file(s)."
         return self._build_result(files, summary, task)
 
-    def _run_react(self, prompt: str, task: dict) -> ArchitectResult | None:
+    def _run_react(self, prompt: str, task: dict, system_prompt: str | None = None) -> ArchitectResult | None:
         """Run via ReAct loop — agent uses write_files tool to submit output."""
         messages = [
-            {"role": "system", "content": self.role_def["system_prompt"]},
+            {"role": "system", "content": system_prompt or self.role_def["system_prompt"]},
             {"role": "user", "content": prompt},
         ]
 
@@ -148,7 +158,8 @@ class ArchitectAgent:
 
     def _build_result(self, files: list[FileContent], summary: str, task: dict) -> ArchitectResult:
         subtasks = self._extract_subtasks(summary, task, files)
-        result = ArchitectResult(files=files, summary=summary, subtasks=subtasks)
+        plan = self._extract_plan(summary)
+        result = ArchitectResult(files=files, summary=summary, subtasks=subtasks, plan=plan)
         config.console.print(Panel(f"[bold]Architect summary:[/bold]\n{summary}", border_style="magenta"))
         config.console.print(f"[bold]{len(files)} skeleton file(s) staged.[/bold]")
         for f in files:
@@ -171,6 +182,16 @@ class ArchitectAgent:
                     content = p.read_bytes().decode("utf-8", errors="replace")
                 files.append(FileContent(path=str(rel), content=content))
         return files
+
+    @staticmethod
+    def _extract_plan(summary: str) -> str:
+        """Extract the PLAN section from the architect's summary."""
+        m = re.search(
+            r"(?:^|\n)PLAN\s*:\s*\n(.*?)(?:\nSUBTASKS\s*:|\Z)",
+            summary,
+            re.DOTALL | re.IGNORECASE,
+        )
+        return m.group(1).strip() if m else ""
 
     @staticmethod
     def _extract_subtasks(summary: str, task: dict, files: list[FileContent]) -> list[SubtaskProposal]:
@@ -215,6 +236,20 @@ class ArchitectAgent:
         if feedback:
             prompt += f"\nPM feedback:\n{feedback}\n"
         return prompt
+
+
+def _format_research_context(research: dict) -> str:
+    """Format a research dict into the ARCHITECT_RESEARCH_CONTEXT template."""
+    relevant = ", ".join(research.get("relevant_files", [])) or "(none)"
+    patterns = "; ".join(research.get("patterns", [])) or "(none)"
+    warnings = "; ".join(research.get("warnings", [])) or "(none)"
+    return ARCHITECT_RESEARCH_CONTEXT.format(
+        relevant_files=relevant,
+        patterns=patterns,
+        data_flow=research.get("data_flow", "(not provided)"),
+        warnings=warnings,
+        summary=research.get("summary", "(not provided)"),
+    )
 
 
 def _sanitize_path(path: str) -> str:

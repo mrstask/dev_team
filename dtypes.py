@@ -63,6 +63,7 @@ class ArchitectResult(BaseModel):
     files: list[FileContent]
     summary: str
     subtasks: list[SubtaskProposal]
+    plan: str = ""  # PLAN section extracted from summary; used by PM for high-leverage review
 
 
 class DeveloperResult(BaseModel):

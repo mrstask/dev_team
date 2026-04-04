@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
-from agents import ClaudeAgent, DevAgent, PMAgent, TestAgent
+from agents import ClaudeAgent, DevAgent, PMAgent, ResearchAgent, TestAgent
 from clients import DashboardClient
 from core import get_role_for_task
 from dtypes import Action, LabelPrefix, Status
@@ -244,10 +244,23 @@ def _apply_human_gate(task: dict, gate_name: str) -> bool:
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 def _handle_architect_todo(task: dict) -> None:
-    """Run ClaudeAgent, save output, set action:review for PM."""
+    """Run ResearchAgent then ArchitectAgent. Save output, set action:review for PM."""
     console = config.console
+
+    # Phase 1: Research — optional, non-blocking
+    research_run_id = _db.create_run(task["id"], _agent_id_cache.get("researcher:explore"), "research")
+    research = ResearchAgent().run(task)
+    if research:
+        _save_context(task["id"], "research", research)
+        _db.update_run(research_run_id, "completed",
+                       output_summary=research.get("summary", "")[:200])
+    else:
+        console.print("[yellow]Research returned no output — architect will proceed without it.[/yellow]")
+        _db.update_run(research_run_id, "failed", error_message="No research output")
+
+    # Phase 2: Architecture
     run_id = _db.create_run(task["id"], _agent_id_cache.get("architect:design"), "architect")
-    result = ClaudeAgent("architect:design").run(task)
+    result = ClaudeAgent("architect:design").run(task, research=research)
 
     if not result or not result.files:
         console.print("[red]Architect produced no output.[/red]")
@@ -289,9 +302,10 @@ def _handle_architect_review(task: dict) -> None:
     files = ctx["files"]
     subtasks = ctx.get("subtasks", [])
     summary = ctx.get("summary", "")
+    plan = ctx.get("plan", "")
 
     pm = PMAgent()
-    decision = pm.run_architect_review(task, files, subtasks, summary)
+    decision = pm.run_architect_review(task, files, subtasks, summary, plan=plan)
 
     if decision.approved:
         mods = decision.subtask_modifications
@@ -517,7 +531,7 @@ def _handle_testing_review(task: dict) -> None:
     files = ctx["files"]
     ci_result_raw = ctx["ci_result"]
     summary = ctx.get("summary", "")
-    tox_output = ci_result_raw.get("output", "") or ""
+    tox_output = _compact_ci_output(ci_result_raw.get("output", "") or "")
 
     pm = PMAgent()
     decision = pm.run_testing_review(task, files, tox_output, summary)
@@ -640,6 +654,45 @@ def _append_feedback(task: dict, feedback: str, source: str) -> None:
         "issues": [feedback] if feedback else [],
         "overall_comment": source,
     })
+
+
+def _compact_ci_output(output: str) -> str:
+    """Extract failure details from pytest --tb=short -q output for PM review.
+
+    Keeps: FAILED lines, short tracebacks, and the final summary line.
+    Discards: passing test dots, setup/teardown noise.
+    Falls back to the last 80 lines if no failure markers are found.
+    """
+    if not output:
+        return "(no output)"
+    lines = output.splitlines()
+    result: list[str] = []
+    in_failure_block = False
+    for line in lines:
+        stripped = line.strip()
+        # Summary line (always keep)
+        if re.search(r"\d+ (failed|passed|error)", stripped):
+            result.append(line)
+            in_failure_block = False
+        # Short test summary section header
+        elif "short test summary info" in stripped:
+            result.append(line)
+            in_failure_block = True
+        # FAILED assertion line
+        elif stripped.startswith("FAILED "):
+            result.append(line)
+            in_failure_block = False
+        # Traceback / error output lines (indented or E-prefixed)
+        elif in_failure_block or stripped.startswith("E ") or stripped.startswith("FAILED"):
+            result.append(line)
+        # Section separators inside failure blocks
+        elif stripped.startswith("_____") or stripped.startswith("====="):
+            result.append(line)
+            in_failure_block = bool(re.search(r"FAILED|ERROR|failed", stripped))
+
+    if not result:
+        return "\n".join(lines[-80:])
+    return "\n".join(result)
 
 
 # ── Context persistence ──────────────────────────────────────────────────────
