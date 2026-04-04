@@ -7,9 +7,9 @@ action label (action:todo or action:review).
 State machine:
   backlog                     → (manual kick) → architect + action:todo
   architect + action:todo     → ClaudeAgent   → architect + action:review
-  architect + action:review   → PMAgent       → develop subtasks (action:todo) or reject
+  architect + action:review   → auto-approve  → develop subtasks (action:todo)
   develop   + action:todo     → DevAgent      → develop + action:review
-  develop   + action:review   → PMAgent       → testing + action:todo or reject
+  develop   + action:review   → auto-approve  → testing + action:todo
   testing   + action:todo     → Reviewer+Tester+CI → testing + action:review
   testing   + action:review   → PMAgent       → done or reject back to develop
 """
@@ -289,76 +289,46 @@ def _handle_architect_todo(task: dict) -> None:
 
 
 def _handle_architect_review(task: dict) -> None:
-    """PM reviews architect output. Approve → create subtasks. Reject → retry."""
+    """Auto-approve architect output → create subtasks (PM review skipped)."""
     console = config.console
-    run_id = _db.create_run(task["id"], _agent_id_cache.get("pm:architect-review"), "pm-review")
     ctx = _load_context(task["id"], "architect")
     if not ctx:
         console.print("[red]No architect context found. Resetting to action:todo.[/red]")
-        _db.update_run(run_id, "failed", error_message="No architect context found")
         _replace_action(task, Action.TODO)
         return
 
     files = ctx["files"]
     subtasks = ctx.get("subtasks", [])
-    summary = ctx.get("summary", "")
-    plan = ctx.get("plan", "")
 
-    pm = PMAgent()
-    decision = pm.run_architect_review(task, files, subtasks, summary, plan=plan)
+    subtask_ids = []
+    for position, st in enumerate(subtasks):
+        sid = _db.create_task(
+            title=st["title"],
+            description=st["description"],
+            status=Status.DEVELOP,
+            priority=st.get("priority", task["priority"]),
+            labels=st.get("labels", ["developer"]) + [Action.TODO],
+            parent_task_id=task["id"],
+            queue_position=position,
+        )
+        subtask_ids.append(sid)
+        console.print(f"  [green]Created subtask #{sid} (queue pos {position}):[/green] {st['title']}")
 
-    if decision.approved:
-        mods = decision.subtask_modifications
-        for mod in mods:
-            idx = mod.get("index", -1)
-            if 0 <= idx < len(subtasks):
-                if "title" in mod:
-                    subtasks[idx]["title"] = mod["title"]
-                if "description" in mod:
-                    subtasks[idx]["description"] = mod["description"]
+    for st_id in subtask_ids:
+        _save_context(st_id, "skeleton_files", files)
 
-        subtask_ids = []
-        for position, st in enumerate(subtasks):
-            sid = _db.create_task(
-                title=st["title"],
-                description=st["description"],
-                status=Status.DEVELOP,
-                priority=st.get("priority", task["priority"]),
-                labels=st.get("labels", ["developer"]) + [Action.TODO],
-                parent_task_id=task["id"],
-                queue_position=position,
-            )
-            subtask_ids.append(sid)
-            console.print(f"  [green]Created subtask #{sid} (queue pos {position}):[/green] {st['title']}")
+    desc = task.get("description", "")
+    subtask_lines = "\n".join(f"- #{sid}" for sid in subtask_ids)
+    _db.update_task(task["id"], {
+        "description": f"{desc}\n\n## Subtasks\n{subtask_lines}",
+    })
 
-        for st_id in subtask_ids:
-            _save_context(st_id, "skeleton_files", files)
-
-        desc = task.get("description", "")
-        subtask_lines = "\n".join(f"- #{sid}" for sid in subtask_ids)
-        _db.update_task(task["id"], {
-            "description": f"{desc}\n\n## Subtasks\n{subtask_lines}",
-        })
-
-        _replace_action(task, None)
-        _db.update_run(run_id, "completed", output_summary=f"Approved — {len(subtask_ids)} subtask(s) created")
-        _db.log_event(task["id"], "pm:architect_review", {
-            "approved": True,
-            "subtasks_created": subtask_ids,
-        })
-        console.print(f"[bold green]PM approved — {len(subtask_ids)} subtask(s) created.[/bold green]")
-    else:
-        feedback = decision.feedback or "No specific feedback."
-        _append_feedback(task, feedback, "PM rejected architect output")
-        _increment_retry(task)
-        _replace_action(task, Action.TODO)
-        _db.update_run(run_id, "completed", output_summary=f"Rejected: {feedback[:200]}")
-        _db.log_event(task["id"], "pm:architect_review", {
-            "approved": False,
-            "feedback": feedback,
-            "retry": _get_retry_count(task),
-        })
-        console.print("[yellow]PM rejected architect output. Retrying.[/yellow]")
+    _replace_action(task, None)
+    _db.log_event(task["id"], "architect_review", {
+        "auto_approved": True,
+        "subtasks_created": subtask_ids,
+    })
+    console.print(f"[bold green]Auto-approved — {len(subtask_ids)} subtask(s) created.[/bold green]")
 
 
 def _handle_develop_todo(task: dict) -> None:
@@ -407,66 +377,18 @@ def _handle_develop_todo(task: dict) -> None:
 
 
 def _handle_develop_review(task: dict) -> None:
-    """PM reviews developer output. Approve → testing. Reject → retry."""
+    """Auto-approve developer output → move to testing (code review + PM review skipped)."""
     console = config.console
-    run_id = _db.create_run(task["id"], _agent_id_cache.get("architect:dev-review"), "code-review")
     ctx = _load_context(task["id"], "developer")
     if not ctx:
         console.print("[red]No developer context found. Resetting to action:todo.[/red]")
-        _db.update_run(run_id, "failed", error_message="No developer context found")
         _replace_action(task, Action.TODO)
         return
 
-    files = ctx["files"]
-    summary = ctx.get("summary", "")
-
-    reviewer_result = ClaudeAgent("architect:dev-review").run_dev_review(task, files, summary)
-
-    if not reviewer_result.approved:
-        _save_context(task["id"], "previous_files", files)
-        issues = reviewer_result.issues
-        comment = reviewer_result.overall_comment
-        _db.update_run(run_id, "completed", output_summary=f"Rejected: {len(issues)} issue(s). {comment[:150]}")
-        _append_feedback(
-            task,
-            "\n".join(f"- {i}" for i in issues) + f"\n\nOverall: {comment}",
-            "Code reviewer rejected",
-        )
-        _db.log_event(task["id"], "code_reviewer:rejected", {
-            "issues": issues,
-            "overall_comment": comment,
-            "retry": _get_retry_count(task) + 1,
-        })
-        _increment_retry(task)
-        _replace_action(task, Action.TODO)
-        console.print(f"[yellow]Reviewer rejected — {len(issues)} issue(s). Retrying.[/yellow]")
-        return
-
-    _db.update_run(run_id, "completed", output_summary="Code review passed")
-
-    pm_run_id = _db.create_run(task["id"], _agent_id_cache.get("pm:dev-review"), "pm-review")
-    pm = PMAgent()
-    decision = pm.run_developer_review(task, files, summary)
-
-    if decision.approved:
-        _db.move_task(task["id"], Status.TESTING)
-        _replace_action(task, Action.TODO)
-        _db.update_run(pm_run_id, "completed", output_summary="Approved — moving to testing")
-        _db.log_event(task["id"], "pm:dev_review", {"approved": True})
-        console.print("[bold green]PM approved developer output. Moving to testing.[/bold green]")
-    else:
-        _save_context(task["id"], "previous_files", files)
-        feedback = decision.feedback or "No specific feedback."
-        _append_feedback(task, feedback, "PM rejected developer output")
-        _increment_retry(task)
-        _replace_action(task, Action.TODO)
-        _db.update_run(pm_run_id, "completed", output_summary=f"Rejected: {feedback[:200]}")
-        _db.log_event(task["id"], "pm:dev_review", {
-            "approved": False,
-            "feedback": feedback,
-            "retry": _get_retry_count(task),
-        })
-        console.print("[yellow]PM rejected developer output. Retrying.[/yellow]")
+    _db.move_task(task["id"], Status.TESTING)
+    _replace_action(task, Action.TODO)
+    _db.log_event(task["id"], "develop_review", {"auto_approved": True})
+    console.print("[bold green]Auto-approved developer output. Moving to testing.[/bold green]")
 
 
 def _handle_testing_todo(task: dict) -> None:

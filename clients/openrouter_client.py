@@ -111,16 +111,18 @@ class OpenRouterClient:
         response_dict matches Ollama's shape so DevAgent can use it unchanged.
         """
         payload: dict[str, Any] = {
-            "model":       self.model,
-            "messages":    messages,
-            "temperature": temperature,
-            "stream":      True,
+            "model":            self.model,
+            "messages":         messages,
+            "temperature":      temperature,
+            "stream":           True,
+            "stream_options":   {"include_usage": True},
         }
         if tools:
             payload["tools"] = tools
 
         full_content: str = ""
         tool_calls_acc: dict[int, dict] = {}  # index → accumulated call
+        usage: dict | None = None
 
         stall = _config.LLM_STALL_TIMEOUT
         # read= handles truly dead connections; meaningful-token stall is tracked below
@@ -153,6 +155,9 @@ class OpenRouterClient:
                     if data is None:
                         continue
 
+                    if data.get("usage"):
+                        usage = data["usage"]
+
                     choices = data.get("choices") or []
                     if not choices:
                         continue
@@ -171,10 +176,10 @@ class OpenRouterClient:
                     _accumulate_tool_calls(tool_call_deltas, tool_calls_acc)
 
                     if finish in ("stop", "tool_calls", "length"):
-                        yield "", self._build_final_response(full_content, tool_calls_acc)
+                        yield "", self._build_final_response(full_content, tool_calls_acc, usage)
                         return
 
-    def _build_final_response(self, full_content: str, tool_calls_acc: dict[int, dict]) -> dict:
+    def _build_final_response(self, full_content: str, tool_calls_acc: dict[int, dict], usage: dict | None = None) -> dict:
         tool_calls = list(tool_calls_acc.values())
         for tc in tool_calls:
             raw = tc["function"]["arguments"]
@@ -182,7 +187,7 @@ class OpenRouterClient:
                 tc["function"]["arguments"] = json.loads(raw)
             except json.JSONDecodeError:
                 tc["function"]["arguments"] = {}
-        return {
+        resp: dict = {
             "model": self.model,
             "message": {
                 "role":       "assistant",
@@ -191,6 +196,9 @@ class OpenRouterClient:
             },
             "done": True,
         }
+        if usage:
+            resp["usage"] = usage
+        return resp
 
     def _normalise(self, data: dict) -> dict:
         """Convert OpenAI response shape → Ollama-compatible shape for DevAgent."""
