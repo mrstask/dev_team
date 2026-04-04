@@ -127,9 +127,26 @@ TOOL_SPECS: list[dict] = [
         "function": {
             "name": "run_tox",
             "description": (
-                "Run the project test suite (tox if available, else pytest). "
+                "Run the full project test suite (tox if available, else pytest). "
                 "Returns pass/fail status and the last 60 lines of output. "
-                "Use this to verify your implementation before calling finish()."
+                "Use this to verify your implementation before calling finish(). "
+                "TIP: If tox fails only on lint, use run_tox_lint instead of re-running the full suite."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_tox_lint",
+            "description": (
+                "Run ONLY the tox lint environment (tox -e lint). "
+                "Much faster than full tox. Use this after fixing lint errors "
+                "instead of re-running the entire test suite."
             ),
             "parameters": {
                 "type": "object",
@@ -354,6 +371,33 @@ def run_tox() -> str:
         return f"ERROR: {e}"
 
 
+def run_tox_lint() -> str:
+    """Run only the tox lint environment. Much faster than full tox."""
+    tox_bin = shutil.which("tox")
+    if not tox_bin:
+        return "ERROR: tox not found. Cannot run lint-only."
+
+    cmd = [tox_bin, "-e", "lint"]
+    cwd = str(config.ROOT)
+    config.console.print("\n[dim]  run_tox_lint: running tox -e lint ...[/dim]")
+    try:
+        process = subprocess.Popen(
+            cmd, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        output = ""
+        for line in process.stdout:
+            output += line
+            config.console.print(f"  [dim]{line.rstrip()}[/dim]")
+        process.wait(timeout=120)
+        last_lines = "\n".join(output.splitlines()[-60:])
+        status = "PASSED" if process.returncode == 0 else "FAILED"
+        return f"lint {status}\n\n{last_lines}"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 
 def dispatch(name: str, args: dict) -> Any:
@@ -377,6 +421,8 @@ def dispatch(name: str, args: dict) -> Any:
         return write_files(args.get("files", []), args.get("summary", ""))
     if name == "run_tox":
         return run_tox()
+    if name == "run_tox_lint":
+        return run_tox_lint()
     if name == "run_tests":
         return "ERROR: Use run_tox instead — it runs tox (or pytest) and returns output."
     return f"ERROR: Unknown tool '{name}'"
