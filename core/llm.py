@@ -139,7 +139,22 @@ def _stream_once(
             stop_ticker.set()
             ticker_thread.join(timeout=2)
 
+    _log_usage(final_resp, client)
     return final_resp, accumulated
+
+
+def _log_usage(resp: dict, client: object) -> None:
+    """Print token usage from a completed LLM response."""
+    usage = resp.get("usage")
+    if not usage:
+        return
+    prompt = usage.get("prompt_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+    total = usage.get("total_tokens", prompt + completion)
+    model = getattr(client, "model", "?")
+    config.console.print(
+        f"  [dim]tokens: {prompt:,} prompt + {completion:,} completion = {total:,} total  [{model}][/dim]"
+    )
 
 
 # ── JSON response parsing ─────────────────────────────────────────────────────

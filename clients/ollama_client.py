@@ -71,7 +71,7 @@ class OllamaClient:
                         yield chunk, None
                     if data.get("done"):
                         # Build a non-streaming-style response dict
-                        final_response = {
+                        final_response: dict = {
                             "model": data.get("model", self.model),
                             "message": {
                                 "role": "assistant",
@@ -79,6 +79,11 @@ class OllamaClient:
                                 "tool_calls": data.get("message", {}).get("tool_calls") or [],
                             },
                             "done": True,
+                            "usage": {
+                                "prompt_tokens":     data.get("prompt_eval_count", 0),
+                                "completion_tokens": data.get("eval_count", 0),
+                                "total_tokens":      data.get("prompt_eval_count", 0) + data.get("eval_count", 0),
+                            },
                         }
                         yield "", final_response
 
