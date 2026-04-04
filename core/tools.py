@@ -125,12 +125,12 @@ TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "run_tox",
+            "name": "run_pytest",
             "description": (
-                "Run the full project test suite (tox if available, else pytest). "
-                "Returns pass/fail status and the last 60 lines of output. "
+                "Run the pytest test suite (backend/tests/). "
+                "Returns pass/fail status and failed test output only. "
                 "Use this to verify your implementation before calling finish(). "
-                "TIP: If tox fails only on lint, use run_tox_lint instead of re-running the full suite."
+                "Max 2 attempts — then call finish() regardless."
             ),
             "parameters": {
                 "type": "object",
@@ -142,11 +142,11 @@ TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "run_tox_lint",
+            "name": "run_pylint",
             "description": (
-                "Run ONLY the tox lint environment (tox -e lint). "
-                "Much faster than full tox. Use this after fixing lint errors "
-                "instead of re-running the entire test suite."
+                "Run pylint on the backend source. "
+                "Much faster than the full test suite. Use this after fixing lint errors "
+                "instead of re-running all tests."
             ),
             "parameters": {
                 "type": "object",
@@ -327,30 +327,17 @@ def write_files(files: list[dict] | str, summary: str) -> dict:
 
 
 
-def run_tox() -> str:
-    """Run tox (or pytest fallback). Returns status + last 60 lines of output."""
-    tox_bin = shutil.which("tox")
+def _find_venv_bin(name: str) -> str:
+    candidates = [
+        config.BACKEND / ".venv" / "bin" / name,
+        config.BACKEND / "venv" / "bin" / name,
+    ]
+    found = next((p for p in candidates if p.exists()), None)
+    return str(found) if found else (shutil.which(name) or name)
 
-    def _find_pytest() -> Path | None:
-        candidates = [
-            config.BACKEND / ".venv" / "bin" / "pytest",
-            config.BACKEND / "venv" / "bin" / "pytest",
-            *sorted((config.ROOT / ".tox").glob("*/bin/pytest")),
-        ]
-        return next((p for p in candidates if p.exists()), None)
 
-    if tox_bin:
-        cmd = [tox_bin]
-        cwd = str(config.ROOT)
-        label = "tox"
-    else:
-        found = _find_pytest()
-        pytest_bin = str(found) if found else (shutil.which("pytest") or "pytest")
-        cmd = [pytest_bin, "tests/", "-v", "--tb=short"]
-        cwd = str(config.BACKEND)
-        label = f"pytest ({pytest_bin})"
-
-    config.console.print(f"\n[dim]  run_tox: running {label} ...[/dim]")
+def _run_tool_subprocess(cmd: list[str], cwd: str, label: str, timeout: int = 300) -> str:
+    config.console.print(f"\n[dim]  running {label} ...[/dim]")
     try:
         process = subprocess.Popen(
             cmd, cwd=cwd,
@@ -361,41 +348,30 @@ def run_tox() -> str:
         for line in process.stdout:
             output += line
             config.console.print(f"  [dim]{line.rstrip()}[/dim]")
-        process.wait(timeout=300)
+        process.wait(timeout=timeout)
         last_lines = "\n".join(output.splitlines()[-60:])
         status = "PASSED" if process.returncode == 0 else "FAILED"
-        return f"tox {status}\n\n{last_lines}"
+        return f"{label} {status}\n\n{last_lines}"
     except FileNotFoundError:
-        return f"ERROR: '{cmd[0]}' not found. Install tox or pytest in the backend venv."
+        return f"ERROR: '{cmd[0]}' not found."
     except Exception as e:
         return f"ERROR: {e}"
 
 
-def run_tox_lint() -> str:
-    """Run only the tox lint environment. Much faster than full tox."""
-    tox_bin = shutil.which("tox")
-    if not tox_bin:
-        return "ERROR: tox not found. Cannot run lint-only."
+def run_pytest() -> str:
+    """Run pytest showing only failures (--tb=short -q). Returns status + output."""
+    pytest_bin = _find_venv_bin("pytest")
+    cmd = [pytest_bin, "tests/", "--tb=short", "-q"]
+    return _run_tool_subprocess(cmd, str(config.BACKEND), "pytest")
 
-    cmd = [tox_bin, "-e", "lint"]
-    cwd = str(config.ROOT)
-    config.console.print("\n[dim]  run_tox_lint: running tox -e lint ...[/dim]")
-    try:
-        process = subprocess.Popen(
-            cmd, cwd=cwd,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-        )
-        output = ""
-        for line in process.stdout:
-            output += line
-            config.console.print(f"  [dim]{line.rstrip()}[/dim]")
-        process.wait(timeout=120)
-        last_lines = "\n".join(output.splitlines()[-60:])
-        status = "PASSED" if process.returncode == 0 else "FAILED"
-        return f"lint {status}\n\n{last_lines}"
-    except Exception as e:
-        return f"ERROR: {e}"
+
+def run_pylint() -> str:
+    """Run pylint on the backend source. Returns status + output."""
+    pylint_bin = _find_venv_bin("pylint")
+    backend_src = config.BACKEND / "app"
+    target = str(backend_src) if backend_src.exists() else str(config.BACKEND)
+    cmd = [pylint_bin, target, "--output-format=text", "--score=no"]
+    return _run_tool_subprocess(cmd, str(config.BACKEND), "pylint", timeout=120)
 
 
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
@@ -419,11 +395,11 @@ def dispatch(name: str, args: dict) -> Any:
         return finish(args.get("summary", ""))
     if name == "write_files":
         return write_files(args.get("files", []), args.get("summary", ""))
-    if name == "run_tox":
-        return run_tox()
-    if name == "run_tox_lint":
-        return run_tox_lint()
-    if name == "run_tests":
-        return "ERROR: Use run_tox instead — it runs tox (or pytest) and returns output."
+    if name == "run_pytest":
+        return run_pytest()
+    if name == "run_pylint":
+        return run_pylint()
+    if name in ("run_tox", "run_tox_lint", "run_tests"):
+        return "ERROR: Use run_pytest (tests) or run_pylint (lint) instead."
     return f"ERROR: Unknown tool '{name}'"
 

@@ -55,7 +55,7 @@ class TestAgent:
 
 
     def run_ci(self, task: dict, files: list[dict], summary: str) -> CIResult:
-        """Write files, run tox, commit on green (tester:ci role)."""
+        """Write files, run pytest + pylint, commit on green (tester:ci role)."""
         config.print_agent_rule("Tester — CI", "tester", extra=f"{len(files)} file(s)")
         _ensure_ci_env()
 
@@ -68,14 +68,21 @@ class TestAgent:
             written.append(p)
             config.console.print(f"  [green]wrote[/green] {path}")
 
-        returncode, tox_output = _run_tox()
-        last_lines = "\n".join(tox_output.splitlines()[-40:])
+        pytest_rc, pytest_out = _run_pytest()
+        pylint_rc, pylint_out = _run_pylint()
+
+        combined_output = f"=== pytest ===\n{pytest_out}\n\n=== pylint ===\n{pylint_out}"
+        last_lines = "\n".join(combined_output.splitlines()[-40:])
+        returncode = pytest_rc  # pylint failures are advisory; only pytest gates the commit
 
         if returncode != 0:
-            config.console.print(Panel(last_lines, title="[red]tox FAILED[/red]", border_style="red"))
+            config.console.print(Panel(last_lines, title="[red]pytest FAILED[/red]", border_style="red"))
             return CIResult(status="failed", output=last_lines)
 
-        config.console.print(Panel(last_lines, title="[green]tox PASSED[/green]", border_style="green"))
+        if pylint_rc != 0:
+            config.console.print(Panel(pylint_out.strip()[-1000:], title="[yellow]pylint warnings[/yellow]", border_style="yellow"))
+
+        config.console.print(Panel(last_lines, title="[green]pytest PASSED[/green]", border_style="green"))
 
         commit_msg = self._generate_commit_message(task, files, summary)
         config.console.print(f"[dim]  Commit message: {commit_msg}[/dim]")
@@ -154,6 +161,12 @@ def _ensure_ci_env() -> None:
             check=False,
         )
 
+    # ── 4. Ensure pylint is available ─────────────────────────────────────────
+    pylint_bin = venv_dir / "bin" / "pylint"
+    if not pylint_bin.exists():
+        console.print("[dim]  CI setup: pip install pylint ...[/dim]")
+        subprocess.run([str(pip), "install", "-q", "pylint"], check=False)
+
     # ── 3. Tests directory scaffold ───────────────────────────────────────────
     tests_dir = backend / "tests"
     tests_dir.mkdir(exist_ok=True)
@@ -176,31 +189,16 @@ def _ensure_ci_env() -> None:
     console.print("[dim]  CI setup: done.[/dim]")
 
 
-def _run_tox() -> tuple[int, str]:
-    """Run the test suite. Uses tox if available, falls back to pytest directly."""
+def _find_venv_bin(name: str) -> str:
+    candidates = [
+        config.BACKEND / ".venv" / "bin" / name,
+        config.BACKEND / "venv" / "bin" / name,
+    ]
+    found = next((p for p in candidates if p.exists()), None)
+    return str(found) if found else (shutil.which(name) or name)
 
-    tox_bin = shutil.which("tox")
 
-    def _find_pytest() -> Path | None:
-        # Prefer backend venv (set up by _ensure_ci_env), then fall back to .tox envs
-        candidates = [
-            config.BACKEND / ".venv" / "bin" / "pytest",
-            config.BACKEND / "venv" / "bin" / "pytest",
-            *sorted((config.ROOT / ".tox").glob("*/bin/pytest")),
-        ]
-        return next((p for p in candidates if p.exists()), None)
-
-    if tox_bin:
-        cmd = [tox_bin]
-        cwd = str(config.ROOT)
-        label = "tox"
-    else:
-        found = _find_pytest()
-        pytest_bin = str(found) if found else (shutil.which("pytest") or "pytest")
-        cmd = [pytest_bin, "tests/", "-v", "--tb=short"]
-        cwd = str(config.BACKEND)
-        label = f"pytest ({pytest_bin})"
-
+def _run_subprocess(cmd: list[str], cwd: str, label: str, timeout: int = 300) -> tuple[int, str]:
     output = ""
     config.console.print(f"\n[dim]  Running {label} ...[/dim]")
     try:
@@ -215,15 +213,31 @@ def _run_tox() -> tuple[int, str]:
         for line in process.stdout:
             output += line
             config.console.print(f"  [dim]{line.rstrip()}[/dim]")
-        process.wait(timeout=300)
+        process.wait(timeout=timeout)
         return process.returncode, output
     except FileNotFoundError:
-        msg = f"ERROR: '{cmd[0]}' not found. Install tox or pytest in the backend venv."
+        msg = f"ERROR: '{cmd[0]}' not found."
         config.console.print(f"[red]  {msg}[/red]")
         return 1, msg
     except Exception as e:
         config.console.print(f"[red]  CI error: {e}[/red]")
         return 1, str(e)
+
+
+def _run_pytest() -> tuple[int, str]:
+    """Run pytest showing only failures (--tb=short -q)."""
+    pytest_bin = _find_venv_bin("pytest")
+    cmd = [pytest_bin, "tests/", "--tb=short", "-q"]
+    return _run_subprocess(cmd, str(config.BACKEND), f"pytest ({pytest_bin})")
+
+
+def _run_pylint() -> tuple[int, str]:
+    """Run pylint on the backend source."""
+    pylint_bin = _find_venv_bin("pylint")
+    backend_src = config.BACKEND / "app"
+    target = str(backend_src) if backend_src.exists() else str(config.BACKEND)
+    cmd = [pylint_bin, target, "--output-format=text", "--score=no"]
+    return _run_subprocess(cmd, str(config.BACKEND), f"pylint ({target})", timeout=120)
 
 
 def _sanitize_path(path: str) -> str:

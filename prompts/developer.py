@@ -8,9 +8,9 @@ DEVELOPER_TASK_PROMPT = (
     "2. Implement the task completely and correctly.\n"
     "3. Call write_file(path, content) ONCE PER FILE — one file per call, not all at once.\n"
     "4. After ALL files are written, call finish(summary) to complete the task.\n\n"
-    "After writing all files you MAY call run_tox() to verify correctness.\n"
-    "Once tox passes (or you choose to skip), call finish() immediately.\n"
-    "Do NOT loop trying to fix test failures indefinitely — max 2 tox attempts.\n"
+    "After writing all files you MAY call run_pytest() to verify correctness.\n"
+    "Once tests pass (or you choose to skip), call finish() immediately.\n"
+    "Do NOT loop trying to fix test failures indefinitely — max 2 pytest attempts.\n"
 )
 
 DEVELOPER_SKELETON_HEADER = "\nSkeleton files from Architect ({count} files):\n"
@@ -41,7 +41,7 @@ Rules:
 CRITICAL — writing files:
 - Call write_file(path, content) ONCE PER FILE. Never bundle multiple files into one call.
 - After writing ALL files, call finish(summary) — this signals task completion.
-- After writing ALL files you MAY call run_tox() once to verify. Max 2 tox attempts — then call finish().
+- After writing ALL files you MAY call run_pytest() once to verify. Max 2 attempts — then call finish().
 - Paths MUST be relative to the project root: start with 'backend/', 'frontend/', 'alembic/', etc.
 - NEVER include the project folder name in paths — e.g. WRONG: 'habr-agentic/backend/app/models/foo.py'
 - CORRECT: 'backend/app/models/foo.py'
