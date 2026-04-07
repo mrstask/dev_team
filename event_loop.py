@@ -27,7 +27,10 @@ import config
 from agents import ClaudeAgent, DevAgent, PMAgent, ResearchAgent, TestAgent
 from clients import DashboardClient
 from core import get_role_for_task, project_context, get_project_root
-from dtypes import Action, LabelPrefix, Status
+from dtypes import (
+    Action, ArchitectResult, CIResult, DeveloperResult, FileContent,
+    LabelPrefix, Status, TestingContext,
+)
 
 _db = DashboardClient(config.DASHBOARD_URL)
 
@@ -308,32 +311,32 @@ def _handle_architect_todo(task: dict) -> None:
 def _handle_architect_review(task: dict) -> None:
     """Auto-approve architect output → create subtasks (PM review skipped)."""
     console = config.console
-    ctx = _load_context(task["id"], "architect")
-    if not ctx:
+    raw = _load_context(task["id"], "architect")
+    if not raw:
         console.print("[red]No architect context found. Resetting to action:todo.[/red]")
         _replace_action(task, Action.TODO)
         return
 
-    files = ctx["files"]
-    subtasks = ctx.get("subtasks", [])
+    ctx = ArchitectResult.model_validate(raw)
 
     subtask_ids = []
-    for position, st in enumerate(subtasks):
+    for position, st in enumerate(ctx.subtasks):
         sid = _db.create_task(
-            title=st["title"],
-            description=st["description"],
+            title=st.title,
+            description=st.description,
             status=Status.DEVELOP,
-            priority=st.get("priority", task["priority"]),
-            labels=st.get("labels", ["developer"]) + [Action.TODO],
+            priority=st.priority or task["priority"],
+            labels=list(st.labels) + [Action.TODO],
             project_id=task["project_id"],
             parent_task_id=task["id"],
             queue_position=position,
         )
         subtask_ids.append(sid)
-        console.print(f"  [green]Created subtask #{sid} (queue pos {position}):[/green] {st['title']}")
+        console.print(f"  [green]Created subtask #{sid} (queue pos {position}):[/green] {st.title}")
 
+    files_raw = [f.model_dump() for f in ctx.files]
     for st_id in subtask_ids:
-        _save_context(st_id, "skeleton_files", files)
+        _save_context(st_id, "skeleton_files", files_raw)
 
     desc = task.get("description", "")
     subtask_lines = "\n".join(f"- #{sid}" for sid in subtask_ids)
@@ -355,8 +358,10 @@ def _handle_develop_todo(task: dict) -> None:
     role = get_role_for_task(task) or "developer"
     run_id = _db.create_run(task["id"], _agent_id_cache.get(role) or _agent_id_cache.get("developer:implement"), "developer")
 
-    skeleton_files = _load_context(task["id"], "skeleton_files")
-    previous_files = _load_context(task["id"], "previous_files")
+    skeleton_raw = _load_context(task["id"], "skeleton_files")
+    previous_raw = _load_context(task["id"], "previous_files")
+    skeleton_files = [FileContent.model_validate(f) for f in skeleton_raw] if skeleton_raw else None
+    previous_files = [FileContent.model_validate(f) for f in previous_raw] if previous_raw else None
 
     def _save_developer_loop(messages: list[dict]) -> None:
         _db.log_event(task["id"], "react_loop:developer", _compact_messages(messages))
@@ -397,11 +402,12 @@ def _handle_develop_todo(task: dict) -> None:
 def _handle_develop_review(task: dict) -> None:
     """Auto-approve developer output → move to testing (code review + PM review skipped)."""
     console = config.console
-    ctx = _load_context(task["id"], "developer")
-    if not ctx:
+    raw = _load_context(task["id"], "developer")
+    if not raw:
         console.print("[red]No developer context found. Resetting to action:todo.[/red]")
         _replace_action(task, Action.TODO)
         return
+    DeveloperResult.model_validate(raw)  # validate structure; we don't need the result here
 
     _db.move_task(task["id"], Status.TESTING)
     _replace_action(task, Action.TODO)
@@ -413,30 +419,31 @@ def _handle_testing_todo(task: dict) -> None:
     """Run TestAgent + CIAgent. Set action:review for PM."""
     console = config.console
     run_id = _db.create_run(task["id"], _agent_id_cache.get("tester:unit-tests"), "testing")
-    ctx = _load_context(task["id"], "developer")
-    if not ctx:
+    raw = _load_context(task["id"], "developer")
+    if not raw:
         console.print("[red]No developer context for testing. Moving back to develop.[/red]")
         _db.update_run(run_id, "failed", error_message="No developer context for testing")
         _db.move_task(task["id"], Status.DEVELOP)
         _replace_action(task, Action.TODO)
         return
 
-    files = ctx["files"]
-    summary = ctx.get("summary", "")
+    dev_ctx = DeveloperResult.model_validate(raw)
+    files_raw = [f.model_dump() for f in dev_ctx.files]
 
     def _save_tester_loop(messages: list[dict]) -> None:
         _db.log_event(task["id"], "react_loop:tester", _compact_messages(messages))
 
-    test_result = TestAgent().run(task, files, on_loop_complete=_save_tester_loop)
-    all_files = files + [f.model_dump() for f in test_result.files]
+    test_result = TestAgent().run(task, files_raw, on_loop_complete=_save_tester_loop)
+    all_files = files_raw + [f.model_dump() for f in test_result.files]
 
-    ci_result = TestAgent().run_ci(task, all_files, summary)
+    ci_result = TestAgent().run_ci(task, all_files, summary=dev_ctx.summary)
 
-    _save_context(task["id"], "testing", {
-        "files": all_files,
-        "ci_result": ci_result.model_dump(),
-        "summary": summary,
-    })
+    testing_ctx = TestingContext(
+        files=[FileContent.model_validate(f) for f in all_files],
+        ci_result=ci_result,
+        summary=dev_ctx.summary,
+    )
+    _save_context(task["id"], "testing", testing_ctx.model_dump())
 
     _db.update_run(
         run_id, "completed",
@@ -461,49 +468,49 @@ def _handle_testing_review(task: dict) -> None:
     """PM reviews test results. Approve → done. Reject → back to develop."""
     console = config.console
     run_id = _db.create_run(task["id"], _agent_id_cache.get("pm:testing-review"), "pm-review")
-    ctx = _load_context(task["id"], "testing")
-    if not ctx:
+    raw = _load_context(task["id"], "testing")
+    if not raw:
         console.print("[red]No testing context found. Resetting to action:todo.[/red]")
         _db.update_run(run_id, "failed", error_message="No testing context found")
         _replace_action(task, Action.TODO)
         return
 
-    files = ctx["files"]
-    ci_result_raw = ctx["ci_result"]
-    summary = ctx.get("summary", "")
-    tox_output = _compact_ci_output(ci_result_raw.get("output", "") or "")
+    ctx = TestingContext.model_validate(raw)
+    files_raw = [f.model_dump() for f in ctx.files]
+    ci_output = _compact_ci_output(ctx.ci_result.output or "")
 
     pm = PMAgent()
-    decision = pm.run_testing_review(task, files, tox_output, summary)
+    decision = pm.run_testing_review(task, files_raw, ci_output, ctx.summary)
 
     if decision.approved:
-        if ci_result_raw.get("status") == "committed":
-            _db.log_event(task["id"], "pm:testing_review", {"approved": True, "sha": ci_result_raw.get("sha")})
+        if ctx.ci_result.status == "committed":
+            _db.log_event(task["id"], "pm:testing_review", {"approved": True, "sha": ctx.ci_result.sha})
             _clear_context(task["id"])
             _replace_action(task, None)
             _db.move_task(task["id"], Status.DONE)
-            _db.update_run(run_id, "completed", output_summary=f"Approved — task done. SHA: {ci_result_raw.get('sha', '')}")
+            _db.update_run(run_id, "completed", output_summary=f"Approved — task done. SHA: {ctx.ci_result.sha or ''}")
             console.print(f"[bold green]✓ Task #{task['id']} done![/bold green]")
-            _update_claude_md(task, files, summary)
+            _update_claude_md(task, files_raw, ctx.summary)
             PMAgent().run_analysis(task["id"])
             if task.get("parent_task_id"):
                 _check_single_parent(task["parent_task_id"])
         else:
             _db.move_task(task["id"], Status.DEVELOP)
-            _save_context(task["id"], "previous_files", files)
-            _append_feedback(task, f"CI status: {ci_result_raw.get('status')}. {tox_output[-500:]}", "CI did not commit")
+            _save_context(task["id"], "previous_files", files_raw)
+            _append_feedback(task, f"CI status: {ctx.ci_result.status}. {ci_output[-500:]}", "CI did not commit")
             _increment_retry(task)
             _replace_action(task, Action.TODO)
-            _db.update_run(run_id, "completed", output_summary=f"Approved but CI status={ci_result_raw.get('status')}")
+            _db.update_run(run_id, "completed", output_summary=f"Approved but CI status={ctx.ci_result.status}")
             _db.log_event(task["id"], "pm:testing_review", {
                 "approved": False,
                 "reason": "ci_not_committed",
-                "ci_status": ci_result_raw.get("status"),
+                "ci_status": ctx.ci_result.status,
             })
             console.print("[yellow]PM approved but CI didn't commit. Back to develop.[/yellow]")
     else:
         _db.move_task(task["id"], Status.DEVELOP)
-        _save_context(task["id"], "previous_files", [f for f in files if not f["path"].startswith("backend/tests/")])
+        non_test_files = [f.model_dump() for f in ctx.files if not f.path.startswith("backend/tests/")]
+        _save_context(task["id"], "previous_files", non_test_files)
         feedback = decision.feedback or ""
         _append_feedback(task, feedback, "PM rejected testing output")
         _increment_retry(task)

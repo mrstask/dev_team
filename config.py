@@ -1,6 +1,7 @@
 """Dev team configuration — paths, models, API endpoints."""
 import json
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,7 +31,17 @@ LANGGRAPH_DASHBOARD = Path(os.getenv("LANGGRAPH_DASHBOARD", ROOT.parent / "langg
 #   "ollama"       — Local Ollama server
 #
 _MODELS_FILE = Path(__file__).parent / "models.json"
-STEPS: dict[str, dict[str, str]] = json.loads(_MODELS_FILE.read_text(encoding="utf-8"))
+_models_raw = json.loads(_MODELS_FILE.read_text(encoding="utf-8"))
+
+# Validate models.json at startup — fail fast on invalid config
+try:
+    from dtypes import ModelsConfig
+    ModelsConfig.model_validate(_models_raw)
+except Exception as e:
+    print(f"FATAL: Invalid models.json: {e}")
+    sys.exit(1)
+
+STEPS: dict[str, dict[str, str]] = _models_raw
 
 
 def step(name: str) -> dict[str, str]:
@@ -73,7 +84,7 @@ def print_agent_rule(name: str, step_name: str, *, extra: str = "") -> None:
 
 # ── Agent Behaviour ────────────────────────────────────────────────────────────
 MAX_TOOL_ROUNDS = 100       # Max ReAct rounds before giving up
-LLM_STALL_TIMEOUT = 360    # Seconds to wait for any chunk before retrying the request
+LLM_STALL_TIMEOUT = 120    # Seconds to wait for any chunk before retrying the request
 LLM_STALL_MAX_RETRIES = 3  # Max stall retries per round before giving up
 
 # When True, saves the developer's output files on reviewer rejection and passes

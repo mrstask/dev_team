@@ -130,21 +130,35 @@ dev_team/
         └── implement_plan.md     # /implement_plan — execute from a plan file
 ```
 
-### Context Storage (`_context/`)
+### Context Storage (`_context/`) — Typed Artifacts
 
-Agent output is persisted in `_context/{task_id}/` between pipeline stages.
+Agent output is persisted in `_context/{task_id}/` between pipeline stages. Each context file has a **Pydantic-validated schema** — validated on save and load to catch malformed agent output early.
 
-| File | Contents |
-|---|---|
-| `research.json` | ResearchAgent findings (relevant files, patterns, data flow, warnings) |
-| `architect.json` | Skeleton files, summary, subtask proposals, plan |
-| `skeleton_files.json` | Skeleton files copied to each subtask |
-| `developer.json` | Implementation files and summary |
-| `previous_files.json` | Files from previous attempt (for retry) |
-| `testing.json` | All files + CI result |
-| `error.log` | Exception traceback |
+| File | Pydantic Model | Contents |
+|---|---|---|
+| `research.json` | `ResearchContext` | Relevant files, patterns, data flow, warnings, summary |
+| `architect.json` | `ArchitectResult` | Skeleton files (`list[FileContent]`), summary, subtask proposals (`list[SubtaskProposal]`), plan |
+| `skeleton_files.json` | `list[FileContent]` | Skeleton files copied to each subtask (validated per-item) |
+| `developer.json` | `DeveloperResult` | Implementation files (`list[FileContent]`) and summary |
+| `previous_files.json` | `list[FileContent]` | Files from previous attempt (for retry, validated per-item) |
+| `testing.json` | `TestingContext` | All files + `CIResult` (Literal status) + summary |
+| `feedback.json` | `FeedbackContext` | Structured review feedback entries |
+| `error.log` | *(plain text)* | Exception traceback |
 
-Cleared on task completion.
+Context models are defined in `dtypes.py`. Cleared on task completion.
+
+### State Machine & Transitions
+
+Status transitions are enforced via `VALID_TRANSITIONS` in `dtypes.py`. All transitions go through `_move_task(task, new_status)` which validates before calling the dashboard API.
+
+```
+backlog   → architect, failed
+architect → develop, failed
+develop   → testing, failed
+testing   → done, develop (retry), failed
+done      → (terminal)
+failed    → backlog (manual only)
+```
 
 ### CI — pytest + pylint
 
@@ -154,9 +168,11 @@ Cleared on task completion.
 
 No tox. Both tools are resolved from `.venv/` via `_find_venv_bin()`.
 
+CI outcomes use `CIStatus = Literal["committed", "failed", "commit_failed"]` — validated by Pydantic, invalid values rejected at construction.
+
 ### LLM Backend Configuration (`models.json`)
 
-Each step's backend and model are configured independently. Example defaults:
+Each step's backend and model are configured independently. Validated at startup via `ModelsConfig` Pydantic model — invalid backend names, empty models, or missing required steps cause immediate `SystemExit`.
 
 | Step | Backend | Model |
 |---|---|---|
@@ -170,4 +186,10 @@ To switch to Ollama or Claude Code SDK for a step, change `"backend"` in `models
 
 ### Retry Handling
 
-Tracked via `retry:N` labels. Max 5 retries before `failed + error:max-retries`. On PM rejection or agent failure, retry counter increments and task resets to `action:todo` with feedback appended.
+Tracked via `retry:N` labels. Max 5 retries before `failed + error:max-retries`. On PM rejection or agent failure, retry counter increments and task resets to `action:todo`.
+
+Feedback is stored as structured `FeedbackContext` entries in `_context/{task_id}/feedback.json` — each entry records source, stage, retry count, and issues.
+
+### Tool State Isolation
+
+The ReAct loop's file accumulator is scoped via `tool_scope()` context manager in `core/tools.py`. Files are always cleaned up on exit — even on exceptions or LLM stalls — preventing cross-task data leaks.

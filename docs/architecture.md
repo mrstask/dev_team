@@ -138,6 +138,34 @@ The Architect creates subtasks when its output is approved by the PM. Each subta
 
 When all subtasks of a parent reach `done`, the parent automatically moves to `done` as well. This is checked after every subtask completion and during the idle polling cycle.
 
+## State Machine Validation
+
+Status transitions are enforced via a `VALID_TRANSITIONS` map. Invalid transitions raise a `ValueError` instead of silently corrupting task state.
+
+```
+Valid transitions:
+  backlog   → architect, failed
+  architect → develop, failed
+  develop   → testing, failed
+  testing   → done, develop (rejection retry), failed
+  done      → (terminal)
+  failed    → backlog (manual resurrection only)
+```
+
+All status transitions in the event loop go through `_move_task(task, new_status)` which validates against this map before calling the dashboard API. This prevents accidental regressions like moving a task from `testing` back to `backlog`.
+
+## CI Result Status
+
+CI outcomes use `CIStatus = Literal["committed", "failed", "commit_failed"]` — validated by Pydantic:
+
+| Value | Meaning |
+|---|---|
+| `"committed"` | Tests passed, code committed to git |
+| `"failed"` | pytest failed, no commit |
+| `"commit_failed"` | Tests passed but git commit failed |
+
+The `CIResult.status` field is typed as `CIStatus`, validated on creation in `TestAgent` and on deserialization when loaded from `testing.json`. Invalid values are rejected at construction.
+
 ## Retry and Error Handling
 
 - Retries are tracked via `retry:N` labels on each task
@@ -146,21 +174,52 @@ When all subtasks of a parent reach `done`, the parent automatically moves to `d
 - When the limit is reached, the task moves to `failed + error:max-retries`
 - Unhandled exceptions mark the task as `failed + error:exception` with a traceback saved to `_context/{task_id}/error.log`
 
-## Context Storage
+## Structured Feedback
 
-All intermediate agent output is stored in `_context/{task_id}/`:
+Review feedback is stored as structured `FeedbackContext` in `_context/{task_id}/feedback.json` instead of being appended as free text to the task description.
 
-| File | Contents |
-|---|---|
-| `research.json` | ResearchAgent findings (relevant files, patterns, data flow, warnings) |
-| `architect.json` | Skeleton files, summary, subtask proposals, plan |
-| `skeleton_files.json` | Skeleton files copied to each subtask |
-| `developer.json` | Implementation files and summary |
-| `previous_files.json` | Files from previous attempt (for retry) |
-| `testing.json` | All files + CI result |
-| `error.log` | Exception traceback |
+Each entry records:
+- `source` — who produced the feedback (`pm`, `architect`, `ci`)
+- `stage` — which pipeline stage (`testing`, `develop`)
+- `retry` — retry count at the time of feedback
+- `feedback` — the feedback text
+- `issues` — list of specific issues
+- `timestamp` — ISO timestamp
+
+This prevents the task description from becoming an unstructured log of mixed spec + feedback + CI output, and gives the developer agent clean, parseable feedback on retry.
+
+## Tool State Isolation
+
+The ReAct loop's file accumulator (`_written_files`) is scoped via a `tool_scope()` context manager. This guarantees that files accumulated during a tool loop are always cleaned up — even if the agent stalls, the LLM times out, or an exception is raised mid-loop. Without this, files from a failed task could silently leak into the next task's output.
+
+## Context Storage — Typed Artifacts
+
+All intermediate agent output is stored in `_context/{task_id}/` between pipeline stages. Each context file has a **Pydantic-validated schema** — data is validated on both save and load, preventing silent corruption from malformed agent output.
+
+| File | Pydantic Model | Contents |
+|---|---|---|
+| `research.json` | `ResearchContext` | Relevant files, patterns, data flow, warnings, summary |
+| `architect.json` | `ArchitectResult` | Skeleton files (`list[FileContent]`), summary, subtask proposals (`list[SubtaskProposal]`), plan |
+| `skeleton_files.json` | `list[FileContent]` | Skeleton files copied to each subtask (validated per-item) |
+| `developer.json` | `DeveloperResult` | Implementation files (`list[FileContent]`) and summary |
+| `previous_files.json` | `list[FileContent]` | Files from previous attempt (for retry, validated per-item) |
+| `testing.json` | `TestingContext` | All files + `CIResult` (Literal status) + summary |
+| `feedback.json` | `FeedbackContext` | Structured review feedback entries (source, stage, retry count) |
+| `error.log` | *(plain text)* | Exception traceback |
 
 Context is cleared when a task reaches `done`.
+
+### Context Validation
+
+Context is loaded from JSON and validated via `Model.model_validate(raw)`:
+
+```python
+_save_context(task_id, "architect", result.model_dump())
+raw = _load_context(task_id, "architect")
+ctx = ArchitectResult.model_validate(raw)   # typed attribute access: ctx.files, ctx.subtasks
+```
+
+If a context file fails validation (missing fields, wrong types), Pydantic raises `ValidationError` — caught by the exception handler which marks the task as failed. This replaces the previous pattern of unsafe `ctx["files"]` dict access that would surface as cryptic `KeyError` exceptions.
 
 ## LLM Backend Configuration
 
@@ -173,6 +232,17 @@ Each agent uses a backend configured in `models.json`. Switching backends requir
 | pm | openrouter | Streaming chat only; no tool loop |
 | developer | openrouter | ReAct with write_files tool |
 | tester | openrouter | ReAct for test generation; direct subprocess for CI |
+
+### Config Validation
+
+`models.json` is validated at startup via a `ModelsConfig` Pydantic model. The following checks run before the event loop starts:
+
+- All required steps exist: `researcher`, `architect`, `pm`, `developer`, `tester`
+- Backend is one of: `openrouter`, `ollama`, `claude-code`
+- Model name is non-empty
+- Fallback config (if present) follows the same schema recursively
+
+Invalid configuration causes an immediate `SystemExit` with a clear validation error — no LLM tokens are wasted on a misconfigured run.
 
 ## Slash Commands (`.claude/commands/`)
 

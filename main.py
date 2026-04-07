@@ -137,33 +137,42 @@ def review_cmd(task_id: int) -> None:
     config.console.print()
 
     # Detect which stage just completed and show its output
-    stage, ctx = None, None
-    for candidate_stage, ctx_key in [("testing", "testing"), ("develop", "developer"), ("architect", "architect")]:
+    from dtypes import ArchitectResult, DeveloperResult, TestingContext
+
+    stage, files, summary = None, [], ""
+    ci_result = None
+    for candidate_stage, ctx_key, model_cls in [
+        ("testing", "testing", TestingContext),
+        ("develop", "developer", DeveloperResult),
+        ("architect", "architect", ArchitectResult),
+    ]:
         path = context_dir / f"{ctx_key}.json"
         if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            ctx = model_cls.model_validate(raw)
             stage = candidate_stage
-            ctx = json.loads(path.read_text(encoding="utf-8"))
+            files = ctx.files
+            summary = ctx.summary if hasattr(ctx, "summary") else ""
+            if isinstance(ctx, TestingContext):
+                ci_result = ctx.ci_result
+                summary = summary or ctx.ci_result.status
             break
 
-    if stage and ctx:
-        files = ctx.get("files", [])
-        summary = ctx.get("summary", "") or ctx.get("ci_result", {}).get("status", "")
+    if stage:
         config.console.print(f"[bold green]Stage completed:[/bold green] {stage}")
         config.console.print(f"[bold]Summary:[/bold] {summary[:300] if summary else '(none)'}")
         config.console.print(f"[bold]Files ({len(files)}):[/bold]")
         for f in files[:20]:
-            path_str = f.get("path") if isinstance(f, dict) else getattr(f, "path", str(f))
-            config.console.print(f"  [cyan]{path_str}[/cyan]")
+            config.console.print(f"  [cyan]{f.path}[/cyan]")
         if len(files) > 20:
             config.console.print(f"  [dim]… {len(files) - 20} more[/dim]")
 
         # Show CI result for testing stage
-        if stage == "testing" and "ci_result" in ctx:
-            ci = ctx["ci_result"]
-            color = "green" if ci.get("status") == "committed" else "red"
-            config.console.print(f"\n[bold]CI status:[/bold] [{color}]{ci.get('status')}[/{color}]")
-            if ci.get("output"):
-                config.console.print(f"[dim]{ci['output'][-800:]}[/dim]")
+        if ci_result:
+            color = "green" if ci_result.status == "committed" else "red"
+            config.console.print(f"\n[bold]CI status:[/bold] [{color}]{ci_result.status}[/{color}]")
+            if ci_result.output:
+                config.console.print(f"[dim]{ci_result.output[-800:]}[/dim]")
     else:
         config.console.print("[dim]No agent output found in context yet.[/dim]")
 

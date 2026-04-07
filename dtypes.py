@@ -1,9 +1,9 @@
 """Shared type definitions and constants for the dev team pipeline."""
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Literal, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ── Task status constants ─────────────────────────────────────────────────────
@@ -47,44 +47,114 @@ class Task(TypedDict, total=False):
 
 # ── Pydantic models for agent communication ─────────────────────────────────
 
-class FileContent(BaseModel, frozen=True):
-    path: str
-    content: str
+class FileContent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    path: str = Field(description="File path relative to project root")
+    content: str = Field(description="Full file content")
 
 
 class SubtaskProposal(BaseModel):
-    title: str
-    description: str
-    priority: str
-    labels: list[str] = Field(default_factory=lambda: ["developer"])
+    model_config = ConfigDict(frozen=True)
+    title: str = Field(description="Short title for the subtask")
+    description: str = Field(description="Implementation instructions for the developer")
+    priority: str = Field(default="medium", description="Task priority: critical, high, medium, low")
+    labels: list[str] = Field(default_factory=lambda: ["developer"], description="Task labels")
 
 
 class ArchitectResult(BaseModel):
-    files: list[FileContent]
-    summary: str
-    subtasks: list[SubtaskProposal]
-    plan: str = ""  # PLAN section extracted from summary; used by PM for high-leverage review
+    model_config = ConfigDict(frozen=True)
+    files: list[FileContent] = Field(description="Skeleton files produced by the architect")
+    summary: str = Field(description="Architect summary including PLAN and SUBTASKS sections")
+    subtasks: list[SubtaskProposal] = Field(default_factory=list, description="Proposed subtasks")
+    plan: str = Field(default="", description="PLAN section extracted from summary")
 
 
 class DeveloperResult(BaseModel):
-    files: list[FileContent]
-    summary: str
+    model_config = ConfigDict(frozen=True)
+    files: list[FileContent] = Field(description="Implemented files")
+    summary: str = Field(default="", description="Developer summary of changes")
 
 
 class ReviewResult(BaseModel):
-    approved: bool
-    issues: list[str] = []
-    overall_comment: str = ""
-    feedback: str = ""
-    subtask_modifications: list[dict] = []
+    model_config = ConfigDict(frozen=True)
+    approved: bool = Field(description="Whether the review passed")
+    issues: list[str] = Field(default_factory=list, description="Specific issues found")
+    overall_comment: str = Field(default="", description="One-sentence summary")
+    feedback: str = Field(default="", description="Detailed feedback for retry")
+    subtask_modifications: list[dict] = Field(default_factory=list, description="Proposed subtask changes")
 
 
 class TestResult(BaseModel):
-    files: list[FileContent]
+    model_config = ConfigDict(frozen=True)
+    files: list[FileContent] = Field(default_factory=list, description="Generated test files")
+
+
+CIStatus = Literal["committed", "failed", "commit_failed"]
 
 
 class CIResult(BaseModel):
-    status: str  # "committed" | "failed" | "commit_failed"
-    sha: str | None = None
-    commit_message: str | None = None
-    output: str | None = None
+    model_config = ConfigDict(frozen=True)
+    status: CIStatus = Field(description="CI outcome: committed, failed, or commit_failed")
+    sha: str | None = Field(default=None, description="Git commit SHA on success")
+    commit_message: str | None = Field(default=None, description="Commit message used")
+    output: str | None = Field(default=None, description="CI command output (pytest + pylint)")
+
+
+# ── Context models — validated on save/load between pipeline stages ──────────
+
+class ResearchContext(BaseModel):
+    """Research agent output — structured codebase exploration findings."""
+    relevant_files: list[str] = Field(default_factory=list, description="File paths relevant to the task")
+    patterns: str = Field(default="", description="Code patterns observed")
+    data_flow: str = Field(default="", description="Data flow analysis")
+    warnings: str = Field(default="", description="Potential issues or risks")
+    summary: str = Field(default="", description="Executive summary of findings")
+
+
+class TestingContext(BaseModel):
+    """Persisted between testing:todo and testing:review stages."""
+    files: list[FileContent] = Field(description="All files (implementation + tests)")
+    ci_result: CIResult = Field(description="CI run outcome")
+    summary: str = Field(default="", description="Developer summary carried forward")
+
+
+class FeedbackEntry(BaseModel):
+    """Single feedback record from a review."""
+    model_config = ConfigDict(frozen=True)
+    source: str = Field(description="Who provided the feedback (PM, architect, human)")
+    stage: str = Field(default="", description="Pipeline stage when feedback was given")
+    retry: int = Field(default=0, description="Retry count when feedback was given")
+    issues: list[str] = Field(default_factory=list, description="Specific issues raised")
+
+
+class FeedbackContext(BaseModel):
+    """Accumulated feedback across retries."""
+    entries: list[FeedbackEntry] = Field(default_factory=list)
+
+
+# ── Models.json validation ───────────────────────────────────────────────────
+
+Backend = Literal["openrouter", "ollama", "claude-code"]
+
+
+class StepFallback(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    backend: Backend = Field(description="Fallback LLM backend")
+    model: str = Field(min_length=1, description="Fallback model identifier")
+
+
+class StepConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    backend: Backend = Field(description="LLM backend for this step")
+    model: str = Field(min_length=1, description="Model identifier")
+    fallback: StepFallback | None = Field(default=None, description="Fallback backend/model")
+
+
+class ModelsConfig(BaseModel):
+    """Validated configuration from models.json. All required steps must be present."""
+    model_config = ConfigDict(frozen=True)
+    researcher: StepConfig
+    architect: StepConfig
+    pm: StepConfig
+    developer: StepConfig
+    tester: StepConfig

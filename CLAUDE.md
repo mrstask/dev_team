@@ -92,7 +92,7 @@ dev_team/
 ├── event_loop.py        # Core autonomous loop, task dispatching, state transitions
 ├── orchestrator.py      # Board display utility for monitoring
 ├── config.py            # Constants, LLM config, shared console (no project-specific paths)
-├── dtypes.py            # Pydantic models (Task, FileContent, ArchitectResult, etc.) + Status/Action constants
+├── dtypes.py            # Pydantic models (agent results, context types, ModelsConfig) + Status/Action constants
 ├── models.json          # LLM backend config per step (backend, model, fallback)
 │
 ├── agents/              # Agent implementations
@@ -143,17 +143,17 @@ dev_team/
 
 ### Context Storage (`_context/`) — Typed Artifacts
 
-Agent output is persisted in `_context/{task_id}/` between pipeline stages. Each context file has a **Pydantic-validated schema** — validated on save and load to catch malformed agent output early.
+Agent output is persisted in `_context/{task_id}/` between pipeline stages. Each context file is **Pydantic-validated on both save and load** via `model_validate()` — malformed agent output is caught immediately rather than causing downstream KeyErrors.
 
 | File | Pydantic Model | Contents |
 |---|---|---|
 | `research.json` | `ResearchContext` | Relevant files, patterns, data flow, warnings, summary |
-| `architect.json` | `ArchitectContext` | Skeleton files, summary, subtask proposals, plan |
-| `skeleton_files.json` | `SkeletonContext` | Skeleton files copied to each subtask |
-| `developer.json` | `DeveloperContext` | Implementation files and summary |
-| `previous_files.json` | `DeveloperContext` | Files from previous attempt (for retry) |
-| `testing.json` | `TestingContext` | All files + `CIResult` (enum status) + summary |
-| `feedback.json` | `FeedbackContext` | Structured review feedback entries |
+| `architect.json` | `ArchitectResult` | Skeleton files (`list[FileContent]`), summary, subtask proposals (`list[SubtaskProposal]`), plan |
+| `skeleton_files.json` | `list[FileContent]` | Skeleton files copied to each subtask (validated per-item) |
+| `developer.json` | `DeveloperResult` | Implementation files (`list[FileContent]`) and summary |
+| `previous_files.json` | `list[FileContent]` | Files from previous attempt (for retry, validated per-item) |
+| `testing.json` | `TestingContext` | All files + `CIResult` (Literal status) + summary |
+| `feedback.json` | `FeedbackContext` | Structured `FeedbackEntry` records (source, stage, retry, issues) |
 | `error.log` | *(plain text)* | Exception traceback |
 
 Context models are defined in `dtypes.py`. Cleared on task completion.
@@ -179,7 +179,7 @@ failed    → backlog (manual only)
 
 No tox. Both tools are resolved from `.venv/` via `_find_venv_bin()`.
 
-CI outcomes use `CIStatus` enum: `COMMITTED`, `FAILED`, `COMMIT_FAILED` — no magic strings.
+CI outcomes use `CIStatus = Literal["committed", "failed", "commit_failed"]` — validated by Pydantic, invalid values rejected at construction.
 
 ### LLM Backend Configuration (`models.json`)
 
@@ -194,6 +194,17 @@ Each step's backend and model are configured independently. Validated at startup
 | tester | openrouter | qwen/qwen3-6b-plus:free |
 
 To switch to Ollama or Claude Code SDK for a step, change `"backend"` in `models.json`. No code changes needed.
+
+### Pydantic Contracts
+
+All inter-agent data flows through validated Pydantic models defined in `dtypes.py`. Key patterns:
+
+- **Result models** (`ArchitectResult`, `DeveloperResult`, `ReviewResult`, `TestResult`, `CIResult`) — `ConfigDict(frozen=True)`, immutable after construction. Created by agents, serialized via `.model_dump()`.
+- **Context models** (`ResearchContext`, `TestingContext`, `FeedbackContext`) — validated on load from JSON via `Model.model_validate(raw)` in `event_loop.py`. Catches malformed agent output between pipeline stages.
+- **Config models** (`ModelsConfig`, `StepConfig`, `StepFallback`) — `models.json` validated at startup. `Backend = Literal["openrouter", "ollama", "claude-code"]` rejects typos. Empty model names rejected via `Field(min_length=1)`.
+- **Mutable defaults** — always `Field(default_factory=list)`, never bare `[]`.
+- **Literal types** — `CIStatus`, `Backend` use `Literal` instead of plain `str` for exhaustive validation.
+- **Field descriptions** — all fields use `Field(description=...)` for schema introspection.
 
 ### Retry Handling
 

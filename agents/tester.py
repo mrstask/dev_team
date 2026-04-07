@@ -187,6 +187,20 @@ def _ensure_ci_env() -> None:
         )
         console.print("[dim]  CI setup: created backend/tests/conftest.py[/dim]")
 
+    # ── 5. Pylint config — ignore venv and generated dirs ────────────────────
+    pylintrc = backend / ".pylintrc"
+    if not pylintrc.exists():
+        pylintrc.write_text(
+            "[MASTER]\n"
+            "ignore=.venv,venv,node_modules,__pycache__,migrations\n\n"
+            "[FORMAT]\n"
+            "max-line-length=120\n\n"
+            "[MESSAGES CONTROL]\n"
+            "disable=C0114,C0115,C0116,C0411,C0410,W0611,R0903\n",
+            encoding="utf-8",
+        )
+        console.print("[dim]  CI setup: created backend/.pylintrc[/dim]")
+
     console.print("[dim]  CI setup: done.[/dim]")
 
 
@@ -240,7 +254,7 @@ def _run_pylint() -> tuple[int, str]:
     backend = get_project_root() / "backend"
     backend_src = backend / "app"
     target = str(backend_src) if backend_src.exists() else str(backend)
-    cmd = [pylint_bin, target, "--output-format=text", "--score=no"]
+    cmd = [pylint_bin, target, "--output-format=text", "--score=no", "--ignore=.venv,venv"]
     return _run_subprocess(cmd, str(backend), f"pylint ({target})", timeout=120)
 
 
