@@ -325,6 +325,7 @@ def _handle_architect_review(task: dict) -> None:
             status=Status.DEVELOP,
             priority=st.get("priority", task["priority"]),
             labels=st.get("labels", ["developer"]) + [Action.TODO],
+            project_id=task["project_id"],
             parent_task_id=task["id"],
             queue_position=position,
         )

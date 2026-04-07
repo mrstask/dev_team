@@ -91,6 +91,7 @@ class DashboardClient:
         status: str,
         priority: str,
         labels: list[str],
+        project_id: int,
         parent_task_id: int | None = None,
         queue_position: int | None = None,
     ) -> int:
@@ -101,7 +102,7 @@ class DashboardClient:
             "status": status,
             "priority": priority,
             "labels": labels,
-            "project_id": self.project_id,
+            "project_id": project_id,
             "assigned_agent_id": None,
         }
         if parent_task_id is not None:
