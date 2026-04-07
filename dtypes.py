@@ -157,6 +157,31 @@ class FeedbackContext(BaseModel):
     entries: list[FeedbackEntry] = Field(default_factory=list)
 
 
+# ── ReAct loop event summary — compact payload for activity events ────────────
+
+class ToolCallRecord(BaseModel):
+    """Single tool invocation within a ReAct loop."""
+    model_config = ConfigDict(frozen=True)
+    name: str = Field(description="Tool function name (read_file, write_file, etc.)")
+    args_summary: str = Field(description="Key argument (file path, pattern, etc.)")
+    ok: bool = Field(description="Whether the tool call succeeded")
+    error_snippet: str = Field(default="", description="Error message if failed (up to 500 chars)")
+
+
+ReactOutcome = Literal["finish_called", "max_rounds", "no_tool_calls", "error"]
+
+
+class ReactLoopSummary(BaseModel):
+    """Compact summary of a ReAct loop execution for activity event logging."""
+    model_config = ConfigDict(frozen=True)
+    round_count: int = Field(description="Number of assistant turns in the loop")
+    tool_sequence: list[ToolCallRecord] = Field(default_factory=list, description="Ordered tool calls")
+    files_written: list[str] = Field(default_factory=list, description="Paths written via write_file")
+    errors: list[str] = Field(default_factory=list, description="Error messages encountered")
+    outcome: ReactOutcome = Field(description="How the loop terminated")
+    finish_summary: str = Field(default="", description="Summary passed to finish() if called")
+
+
 # ── Models.json validation ───────────────────────────────────────────────────
 
 Backend = Literal["openrouter", "ollama", "claude-code"]

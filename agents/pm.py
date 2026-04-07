@@ -116,8 +116,6 @@ class PMAgent:
         )]
         for ev in events:
             payload_str = json.dumps(ev.get("payload", {}), ensure_ascii=False)
-            if len(payload_str) > 600:
-                payload_str = payload_str[:600] + " ..."
             lines.append(f"[{ev.get('created_at', '?')}] {ev['event_type']}: {payload_str}")
         return "\n".join(lines)
 

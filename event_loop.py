@@ -29,7 +29,7 @@ from clients import DashboardClient
 from core import get_role_for_task, project_context, get_project_root
 from dtypes import (
     Action, ArchitectResult, CIResult, DeveloperResult, FileContent,
-    LabelPrefix, Status, TestingContext,
+    LabelPrefix, ReactLoopSummary, Status, TestingContext, ToolCallRecord,
 )
 
 _db = DashboardClient(config.DASHBOARD_URL)
@@ -364,7 +364,7 @@ def _handle_develop_todo(task: dict) -> None:
     previous_files = [FileContent.model_validate(f) for f in previous_raw] if previous_raw else None
 
     def _save_developer_loop(messages: list[dict]) -> None:
-        _db.log_event(task["id"], "react_loop:developer", _compact_messages(messages))
+        _db.log_event(task["id"], "react_loop:developer", _summarize_react_loop(messages))
 
     result = DevAgent(role).run(
         task,
@@ -431,7 +431,7 @@ def _handle_testing_todo(task: dict) -> None:
     files_raw = [f.model_dump() for f in dev_ctx.files]
 
     def _save_tester_loop(messages: list[dict]) -> None:
-        _db.log_event(task["id"], "react_loop:tester", _compact_messages(messages))
+        _db.log_event(task["id"], "react_loop:tester", _summarize_react_loop(messages))
 
     test_result = TestAgent().run(task, files_raw, on_loop_complete=_save_tester_loop)
     all_files = files_raw + [f.model_dump() for f in test_result.files]
@@ -702,29 +702,92 @@ def _save_error_log(task: dict, exc: Exception) -> None:
     path.write_text(traceback.format_exc(), encoding="utf-8")
 
 
-def _compact_messages(messages: list[dict], max_content: int = 2000) -> dict:
-    """Truncate message content so the payload fits in an activity event."""
-    compacted = []
-    for msg in messages:
-        m = {"role": msg.get("role", "")}
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            m["content"] = content[:max_content] + f" …[+{len(content) - max_content}]" if len(content) > max_content else content
-        tool_calls = msg.get("tool_calls")
-        if tool_calls:
-            m["tool_calls"] = [
-                {
-                    "function": {
-                        "name": tc.get("function", {}).get("name"),
-                        "arguments": (
-                            tc["function"]["arguments"][:max_content] + " …[truncated]"
-                            if isinstance(tc.get("function", {}).get("arguments"), str)
-                            and len(tc["function"]["arguments"]) > max_content
-                            else tc.get("function", {}).get("arguments")
-                        ),
-                    }
-                }
-                for tc in tool_calls
-            ]
-        compacted.append(m)
-    return {"round_count": sum(1 for m in messages if m.get("role") == "assistant"), "messages": compacted}
+def _extract_arg_summary(tool_name: str, raw_args: str) -> str:
+    """Extract the key argument from a tool call's JSON arguments string."""
+    try:
+        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    except (json.JSONDecodeError, TypeError):
+        return raw_args[:100] if isinstance(raw_args, str) else ""
+    if not isinstance(args, dict):
+        return str(args)[:100]
+    # Return the most informative arg per tool type
+    if tool_name in ("read_file", "write_file"):
+        return args.get("path", "")
+    if tool_name in ("list_files", "search_code"):
+        return args.get("pattern", "")
+    if tool_name == "finish":
+        return (args.get("summary", "") or "")[:500]
+    # Fallback: first string value
+    for v in args.values():
+        if isinstance(v, str):
+            return v[:200]
+    return ""
+
+
+def _extract_tool_calls(messages: list[dict]) -> list[ToolCallRecord]:
+    """Walk messages and pair each tool call with its result."""
+    records: list[ToolCallRecord] = []
+    # Build a lookup from tool_call index to the next tool-role message
+    tool_results: dict[int, str] = {}
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "tool":
+            tool_results[i] = msg.get("content", "")
+
+    tool_result_idx = 0
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            continue
+        for tc in msg["tool_calls"]:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            args_summary = _extract_arg_summary(name, fn.get("arguments", ""))
+
+            # Find the matching tool result (next tool message after this assistant message)
+            ok = True
+            error_snippet = ""
+            result_key = i + 1 + tool_result_idx
+            # Scan forward for the next tool-role message
+            for j in range(i + 1, min(i + 5, len(messages))):
+                if messages[j].get("role") == "tool":
+                    result = messages[j].get("content", "")
+                    if result.startswith("ERROR:") or "FAILED" in result.upper():
+                        ok = False
+                        error_snippet = result[:500]
+                    break
+
+            records.append(ToolCallRecord(
+                name=name,
+                args_summary=args_summary,
+                ok=ok,
+                error_snippet=error_snippet,
+            ))
+    return records
+
+
+def _detect_outcome(messages: list[dict], tool_calls: list[ToolCallRecord]) -> str:
+    """Determine how the ReAct loop terminated."""
+    if tool_calls and tool_calls[-1].name == "finish":
+        return "finish_called"
+    assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
+    if assistant_count >= 40:
+        return "max_rounds"
+    if messages and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
+        return "no_tool_calls"
+    return "error"
+
+
+def _summarize_react_loop(messages: list[dict]) -> dict:
+    """Build a compact, validated summary of a ReAct loop for activity event logging."""
+    tool_calls = _extract_tool_calls(messages)
+    outcome = _detect_outcome(messages, tool_calls)
+    finish_summary = next(
+        (tc.args_summary for tc in reversed(tool_calls) if tc.name == "finish"), ""
+    )
+    return ReactLoopSummary(
+        round_count=sum(1 for m in messages if m.get("role") == "assistant"),
+        tool_sequence=tool_calls,
+        files_written=[tc.args_summary for tc in tool_calls if tc.name == "write_file" and tc.ok],
+        errors=[tc.error_snippet for tc in tool_calls if tc.error_snippet],
+        outcome=outcome,
+        finish_summary=finish_summary,
+    ).model_dump()
