@@ -92,7 +92,7 @@ dev_team/
 ├── event_loop.py        # Core autonomous loop, task dispatching, state transitions
 ├── orchestrator.py      # Board display utility for monitoring
 ├── config.py            # Constants, LLM config, shared console (no project-specific paths)
-├── dtypes.py            # Pydantic models (agent results, context types, ModelsConfig) + Status/Action constants
+├── dtypes.py            # Pydantic models, Literal types (TaskStatusName, TaskPriorityName, AgentType), Task TypedDict matching ai-ui TaskRead
 ├── models.json          # LLM backend config per step (backend, model, fallback)
 │
 ├── agents/              # Agent implementations
@@ -195,15 +195,18 @@ Each step's backend and model are configured independently. Validated at startup
 
 To switch to Ollama or Claude Code SDK for a step, change `"backend"` in `models.json`. No code changes needed.
 
-### Pydantic Contracts
+### Pydantic Contracts & ai-ui Schema Alignment
 
 All inter-agent data flows through validated Pydantic models defined in `dtypes.py`. Key patterns:
 
+- **Dashboard types** — `TaskStatusName`, `TaskPriorityName`, `AgentType` are `Literal` types matching ai-ui's `task_metadata.py` and `agent.py` schemas exactly. `Task` TypedDict mirrors all 18 fields from ai-ui's `TaskRead`.
 - **Result models** (`ArchitectResult`, `DeveloperResult`, `ReviewResult`, `TestResult`, `CIResult`) — `ConfigDict(frozen=True)`, immutable after construction. Created by agents, serialized via `.model_dump()`.
 - **Context models** (`ResearchContext`, `TestingContext`, `FeedbackContext`) — validated on load from JSON via `Model.model_validate(raw)` in `event_loop.py`. Catches malformed agent output between pipeline stages.
 - **Config models** (`ModelsConfig`, `StepConfig`, `StepFallback`) — `models.json` validated at startup. `Backend = Literal["openrouter", "ollama", "claude-code"]` rejects typos. Empty model names rejected via `Field(min_length=1)`.
+- **PATCH safety** — `DashboardClient.update_task()` fetches full task state before PATCH to preserve all fields. ai-ui's `TaskUpdate` schema applies ALL fields (defaults to None for omitted ones), so partial payloads would wipe data.
+- **Agent registration** — uses `agent_type="custom"` matching ai-ui's `AgentType = Literal["mock", "langchain", "langgraph", "custom"]`.
 - **Mutable defaults** — always `Field(default_factory=list)`, never bare `[]`.
-- **Literal types** — `CIStatus`, `Backend` use `Literal` instead of plain `str` for exhaustive validation.
+- **Literal types** — `CIStatus`, `Backend`, `TaskStatusName`, `TaskPriorityName` use `Literal` instead of plain `str` for exhaustive validation.
 - **Field descriptions** — all fields use `Field(description=...)` for schema introspection.
 
 ### Retry Handling

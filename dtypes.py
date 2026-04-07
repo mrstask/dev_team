@@ -1,22 +1,38 @@
 """Shared type definitions and constants for the dev team pipeline."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+# ── Literal types matching ai-ui backend ─────────────────────────────────────
+
+TaskStatusName = Literal[
+    "backlog", "ready", "running", "review", "done", "failed",
+    "architect", "develop", "testing",
+]
+
+TaskPriorityName = Literal["low", "medium", "high", "critical"]
+
+AgentType = Literal["mock", "langchain", "langgraph", "custom"]
 
 
 # ── Task status constants ─────────────────────────────────────────────────────
 
 class Status:
     BACKLOG = "backlog"
+    READY = "ready"
+    RUNNING = "running"
+    REVIEW = "review"
     ARCHITECT = "architect"
     DEVELOP = "develop"
     TESTING = "testing"
     DONE = "done"
     FAILED = "failed"
 
-    ALL = [BACKLOG, ARCHITECT, DEVELOP, TESTING, DONE, FAILED]
+    ALL = [BACKLOG, READY, RUNNING, REVIEW, ARCHITECT, DEVELOP, TESTING, DONE, FAILED]
 
 
 class Action:
@@ -31,18 +47,27 @@ class LabelPrefix:
     ERROR = "error:"
 
 
-# ── Dashboard task (external API shape — stays as TypedDict) ─────────────────
+# ── Dashboard task (external API shape — matches ai-ui TaskRead) ─────────────
 
 class Task(TypedDict, total=False):
     id: int
-    title: str
-    description: str
-    status: str
-    priority: str
-    labels: list[str]
-    parent_task_id: int | None
     project_id: int
+    title: str
+    description: str | None
+    short_description: str | None
+    implementation_description: str | None
+    definition_of_done: str | None
+    status: TaskStatusName
+    priority: TaskPriorityName
     assigned_agent_id: int | None
+    human_owner: str | None
+    labels: list[str]
+    due_date: str | None
+    story_id: int | None
+    parent_task_id: int | None
+    queue_position: int | None
+    created_at: str
+    updated_at: str
 
 
 # ── Pydantic models for agent communication ─────────────────────────────────

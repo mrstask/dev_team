@@ -73,16 +73,8 @@ class DashboardClient:
         if "---\nREVIEW FEEDBACK:" in base_desc:
             base_desc = base_desc[:base_desc.index("---\nREVIEW FEEDBACK:")].rstrip()
         new_desc = f"{base_desc}{separator}{issues_text}\n\nOverall: {comment}"
-        payload = {
-            "title":             task["title"],
-            "description":       new_desc,
-            "status":            task["status"],
-            "priority":          task["priority"],
-            "assigned_agent_id": task.get("assigned_agent_id"),
-            "labels":            task.get("labels", []),
-        }
-        with httpx.Client(timeout=30) as client:
-            client.patch(f"{self.base_url}/tasks/{task_id}", json=payload)
+        # Use update_task to preserve all fields
+        self.update_task(task_id, {"description": new_desc})
 
     def create_task(
         self,
@@ -115,14 +107,25 @@ class DashboardClient:
             return resp.json()["id"]
 
     def update_task(self, task_id: int, updates: dict) -> dict:
-        """Patch fields on a task. Fetches current state first to satisfy required-field validation."""
+        """Patch fields on a task. Fetches current state first to preserve all fields."""
         task = self.get_task(task_id)
+        # Build full payload from current state — ai-ui TaskUpdate applies ALL fields,
+        # so omitted fields default to None and wipe existing data.
         payload = {
             "title": task["title"],
+            "description": task.get("description"),
+            "short_description": task.get("short_description"),
+            "implementation_description": task.get("implementation_description"),
+            "definition_of_done": task.get("definition_of_done"),
             "status": task["status"],
             "priority": task["priority"],
             "assigned_agent_id": task.get("assigned_agent_id"),
+            "human_owner": task.get("human_owner"),
             "labels": task.get("labels", []),
+            "due_date": task.get("due_date"),
+            "story_id": task.get("story_id"),
+            "parent_task_id": task.get("parent_task_id"),
+            "queue_position": task.get("queue_position"),
         }
         payload.update(updates)
         with httpx.Client(timeout=30) as client:
@@ -284,7 +287,7 @@ class DashboardClient:
                         "slug": slug,
                         "description": info.get("description", ""),
                         "status": "online",
-                        "agent_type": "dev_team",
+                        "agent_type": "custom",
                         "capabilities": []
                     }
                     client.post(f"{self.base_url}/agents", json=payload)
