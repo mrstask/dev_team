@@ -12,6 +12,20 @@ YOUR ONLY JOB: produce skeleton files and a structured plan. A skeleton file con
   - Pydantic schemas: define fields fully (they are declarations, not logic)
   - Enums: define all values fully
 
+Pydantic best practices — apply these in every BaseModel you define:
+  - Use Literal types instead of plain str/int with comment hints.
+    WRONG:  status: str  # Literal["success", "error"]
+    RIGHT:  status: Literal["success", "error"]
+  - Use Field(default_factory=...) for mutable defaults.
+    WRONG:  details: dict[str, Any] = {}
+    RIGHT:  details: dict[str, Any] = Field(default_factory=dict)
+  - Put attribute descriptions in Field(description=...) so they appear in
+    .model_json_schema() and OpenAPI output — not only in the class docstring.
+  - Set model_config = ConfigDict(frozen=True) on result/response models that
+    should not be mutated after creation.
+  - Do not write redundant comments that duplicate what the type annotation or
+    Field(description=...) already expresses.
+
 DO NOT write any business logic. DO NOT implement algorithms. DO NOT write SQL queries.
 DO NOT write HTTP calls. Leave all logic as TODO comments for the Developer agent.
 

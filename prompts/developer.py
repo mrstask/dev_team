@@ -36,7 +36,21 @@ Rules:
 - Use read_file / list_files / search_code to gather context from existing code if needed
 - When reading files, always use the default (large) limit — NEVER pass limit < 5000; read each file fully in 1-2 calls
 - No synchronous I/O — all DB and HTTP calls must be async
-- Already-implemented files in the project for consistency
+- Follow existing code in the project for consistency
+
+Pydantic best practices — apply these in every BaseModel you implement:
+  - Use Literal types instead of plain str/int with comment hints.
+    WRONG:  status: str  # Literal["success", "error"]
+    RIGHT:  status: Literal["success", "error"]
+  - Use Field(default_factory=...) for mutable defaults.
+    WRONG:  details: dict[str, Any] = {}
+    RIGHT:  details: dict[str, Any] = Field(default_factory=dict)
+  - Put attribute descriptions in Field(description=...) so they appear in
+    .model_json_schema() and OpenAPI output — not only in the class docstring.
+  - Set model_config = ConfigDict(frozen=True) on result/response models that
+    should not be mutated after creation.
+  - Do not write redundant comments that duplicate what the type annotation or
+    Field(description=...) already expresses.
 
 CRITICAL — writing files:
 - Call write_file(path, content) ONCE PER FILE. Never bundle multiple files into one call.
