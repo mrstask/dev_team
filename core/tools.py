@@ -2,10 +2,41 @@
 import json
 import shutil
 import subprocess
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import config
+
+# ── Per-task project context (thread-local) ──────────────────────────────────
+
+_local = threading.local()
+
+
+def set_project_root(root: Path) -> None:
+    """Set the target project root for the current task."""
+    _local.project_root = root
+
+
+def get_project_root() -> Path:
+    """Return the current task's project root. Falls back to config.ROOT if unset."""
+    return getattr(_local, "project_root", None) or config.ROOT
+
+
+def clear_project_root() -> None:
+    """Clear the per-task project root."""
+    _local.project_root = None
+
+
+@contextmanager
+def project_context(root: Path):
+    """Context manager that sets and clears the project root for a task."""
+    set_project_root(root)
+    try:
+        yield root
+    finally:
+        clear_project_root()
 
 # ── Ollama tool specs (function calling) ───────────────────────────────────────
 
@@ -189,7 +220,7 @@ def _resolve(path: str) -> tuple[Path, str]:
             return base_path, path[len(tag):]
     if path.startswith("lg_dashboard:"):
         return config.LANGGRAPH_DASHBOARD, path[len("lg_dashboard:"):]
-    return config.ROOT, path
+    return get_project_root(), path
 
 
 # ── Tool implementations ───────────────────────────────────────────────────────
@@ -269,12 +300,13 @@ def write_file(path: str, content: str) -> str:
     """Write a single file to disk. Returns a status string."""
     if not path:
         return "ERROR: path is required"
+    root = get_project_root()
     # Strip accidental project-name prefix (e.g. "habr-agentic/backend/...")
-    root_name = config.ROOT.name
+    root_name = root.name
     if path.startswith(root_name + "/"):
         path = path[len(root_name) + 1:]
     try:
-        target = config.ROOT / path
+        target = root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return f"OK: wrote {path}"
@@ -302,6 +334,7 @@ def write_files(files: list[dict] | str, summary: str) -> dict:
             config.console.print(f"[red]  write_files: JSON parse failed ({e}) — 0 files written[/red]")
             files = []
 
+    root = get_project_root()
     written: list[str] = []
     errors: list[str] = []
     for f in files:
@@ -309,11 +342,11 @@ def write_files(files: list[dict] | str, summary: str) -> dict:
         content = f.get("content", "")
         if not path:
             continue
-        root_name = config.ROOT.name
+        root_name = root.name
         if path.startswith(root_name + "/"):
             path = path[len(root_name) + 1:]
         try:
-            target = config.ROOT / path
+            target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             written.append(path)
@@ -328,9 +361,10 @@ def write_files(files: list[dict] | str, summary: str) -> dict:
 
 
 def _find_venv_bin(name: str) -> str:
+    backend = get_project_root() / "backend"
     candidates = [
-        config.BACKEND / ".venv" / "bin" / name,
-        config.BACKEND / "venv" / "bin" / name,
+        backend / ".venv" / "bin" / name,
+        backend / "venv" / "bin" / name,
     ]
     found = next((p for p in candidates if p.exists()), None)
     return str(found) if found else (shutil.which(name) or name)
@@ -361,17 +395,19 @@ def _run_tool_subprocess(cmd: list[str], cwd: str, label: str, timeout: int = 30
 def run_pytest() -> str:
     """Run pytest showing only failures (--tb=short -q). Returns status + output."""
     pytest_bin = _find_venv_bin("pytest")
+    backend = get_project_root() / "backend"
     cmd = [pytest_bin, "tests/", "--tb=short", "-q"]
-    return _run_tool_subprocess(cmd, str(config.BACKEND), "pytest")
+    return _run_tool_subprocess(cmd, str(backend), "pytest")
 
 
 def run_pylint() -> str:
     """Run pylint on the backend source. Returns status + output."""
     pylint_bin = _find_venv_bin("pylint")
-    backend_src = config.BACKEND / "app"
-    target = str(backend_src) if backend_src.exists() else str(config.BACKEND)
+    backend = get_project_root() / "backend"
+    backend_src = backend / "app"
+    target = str(backend_src) if backend_src.exists() else str(backend)
     cmd = [pylint_bin, target, "--output-format=text", "--score=no"]
-    return _run_tool_subprocess(cmd, str(config.BACKEND), "pylint", timeout=120)
+    return _run_tool_subprocess(cmd, str(backend), "pylint", timeout=120)
 
 
 # ── Dispatcher ─────────────────────────────────────────────────────────────────

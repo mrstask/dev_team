@@ -13,9 +13,9 @@ load_dotenv(_here / ".env", override=True)
 load_dotenv(_here.parent / ".env")
 
 # ── Project Paths ──────────────────────────────────────────────────────────────
+# ROOT is a legacy fallback — the pipeline resolves project root dynamically
+# from the dashboard project's root_path field via each task's project_id.
 ROOT = Path(os.getenv("PROJECT_ROOT", Path(__file__).parent.parent / "habr-agentic"))
-BACKEND = ROOT / "backend"
-FRONTEND = ROOT / "frontend"
 
 # Source projects to port from (optional, configure per project)
 SOURCE_PROJECTS: dict[str, Path] = {}
@@ -49,8 +49,7 @@ OLLAMA_TIMEOUT = 1200     # seconds per request (20 min)
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
 # ── Dashboard API ──────────────────────────────────────────────────────────────
-DASHBOARD_URL        = "http://localhost:8000/api"
-DASHBOARD_PROJECT_ID = 3
+DASHBOARD_URL = "http://localhost:8000/api"
 
 # ── Shared Console ────────────────────────────────────────────────────────
 console = Console()

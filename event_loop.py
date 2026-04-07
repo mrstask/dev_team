@@ -26,10 +26,10 @@ from rich.rule import Rule
 import config
 from agents import ClaudeAgent, DevAgent, PMAgent, ResearchAgent, TestAgent
 from clients import DashboardClient
-from core import get_role_for_task
+from core import get_role_for_task, project_context, get_project_root
 from dtypes import Action, LabelPrefix, Status
 
-_db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+_db = DashboardClient(config.DASHBOARD_URL)
 
 _PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
@@ -84,7 +84,7 @@ def run_loop(poll_interval: int = config.EVENT_LOOP_POLL_INTERVAL) -> None:
         "[bold cyan]Autonomous Event Loop[/bold cyan]\n"
         f"  Poll interval: {poll_interval}s\n"
         f"  Max retries:   {config.MAX_TASK_RETRIES}\n"
-        f"  Dashboard:     {config.DASHBOARD_URL}  project {config.DASHBOARD_PROJECT_ID}",
+        f"  Dashboard:     {config.DASHBOARD_URL}",
         border_style="cyan",
     ))
 
@@ -152,6 +152,19 @@ def _get_action(task: dict) -> str | None:
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
+def _resolve_project_root(task: dict) -> Path:
+    """Resolve the target project root from the task's project_id via dashboard."""
+    project_id = task.get("project_id")
+    if not project_id:
+        config.console.print("[yellow]Task has no project_id — falling back to config.ROOT[/yellow]")
+        return config.ROOT
+    root_path = _db.get_project_root(project_id)
+    if not root_path:
+        config.console.print(f"[yellow]Project {project_id} has no root_path set — falling back to config.ROOT[/yellow]")
+        return config.ROOT
+    return Path(root_path)
+
+
 def _process_task(task: dict) -> None:
     """Dispatch a task based on its status + action label."""
     console = config.console
@@ -159,12 +172,15 @@ def _process_task(task: dict) -> None:
     action = _get_action(task)
     tid = task["id"]
 
+    project_root = _resolve_project_root(task)
+
     console.print(Rule(style="cyan"))
     console.print(
         f"[bold]#{tid}[/bold] {task['title']}  "
         f"[dim]{status}[/dim] + [dim]{action}[/dim]  "
         f"[{'red' if task['priority'] == 'critical' else 'yellow' if task['priority'] == 'high' else 'blue'}]"
-        f"{task['priority']}[/]"
+        f"{task['priority']}[/]  "
+        f"[dim]→ {project_root}[/dim]"
     )
 
     if _get_retry_count(task) >= config.MAX_TASK_RETRIES:
@@ -191,32 +207,33 @@ def _process_task(task: dict) -> None:
     _db.create_run = _tracked_create_run
     _db.update_run = _tracked_update_run
 
-    try:
-        if status == Status.ARCHITECT and action == "todo":
-            _handle_architect_todo(task)
-        elif status == Status.ARCHITECT and action == "review":
-            _handle_architect_review(task)
-        elif status == Status.DEVELOP and action == "todo":
-            _handle_develop_todo(task)
-        elif status == Status.DEVELOP and action == "review":
-            _handle_develop_review(task)
-        elif status == Status.TESTING and action == "todo":
-            _handle_testing_todo(task)
-        elif status == Status.TESTING and action == "review":
-            _handle_testing_review(task)
-        else:
-            console.print(f"[yellow]Unhandled state: {status} + {action}[/yellow]")
-    except Exception as exc:
-        console.print(f"[red]Exception processing #{tid}: {exc}[/red]")
-        _save_error_log(task, exc)
-        for run_id in _open_run_ids:
-            _db.__class__.update_run(_db, run_id, "failed", error_message=str(exc))
-        _replace_action(task, None)
-        _add_label(task, f"{LabelPrefix.ERROR}exception")
-        _db.move_task(tid, Status.FAILED)
-    finally:
-        _db.create_run = _orig_create_run
-        _db.update_run = _db.__class__.update_run.__get__(_db)
+    with project_context(project_root):
+        try:
+            if status == Status.ARCHITECT and action == "todo":
+                _handle_architect_todo(task)
+            elif status == Status.ARCHITECT and action == "review":
+                _handle_architect_review(task)
+            elif status == Status.DEVELOP and action == "todo":
+                _handle_develop_todo(task)
+            elif status == Status.DEVELOP and action == "review":
+                _handle_develop_review(task)
+            elif status == Status.TESTING and action == "todo":
+                _handle_testing_todo(task)
+            elif status == Status.TESTING and action == "review":
+                _handle_testing_review(task)
+            else:
+                console.print(f"[yellow]Unhandled state: {status} + {action}[/yellow]")
+        except Exception as exc:
+            console.print(f"[red]Exception processing #{tid}: {exc}[/red]")
+            _save_error_log(task, exc)
+            for run_id in _open_run_ids:
+                _db.__class__.update_run(_db, run_id, "failed", error_message=str(exc))
+            _replace_action(task, None)
+            _add_label(task, f"{LabelPrefix.ERROR}exception")
+            _db.move_task(tid, Status.FAILED)
+        finally:
+            _db.create_run = _orig_create_run
+            _db.update_run = _db.__class__.update_run.__get__(_db)
 
 
 # ── Human gate ───────────────────────────────────────────────────────────────
@@ -651,7 +668,7 @@ def _clear_context(task_id: int) -> None:
 
 def _update_claude_md(task: dict, files: list[dict], summary: str) -> None:
     """Append a brief task-completion note to the target project's CLAUDE.md."""
-    claude_md = config.ROOT / "CLAUDE.md"
+    claude_md = get_project_root() / "CLAUDE.md"
     if not claude_md.exists():
         return
     file_list = "\n".join(f"  - {f['path']}" for f in files[:12])

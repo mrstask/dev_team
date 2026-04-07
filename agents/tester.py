@@ -7,7 +7,7 @@ from pathlib import Path
 from rich.panel import Panel
 
 import config
-from core import create_client, create_fallback_client, run_react_loop
+from core import create_client, create_fallback_client, run_react_loop, get_project_root
 from dtypes import CIResult, FileContent, TestResult
 from prompts import TESTER_AGENT_SYSTEM_PROMPT, TESTER_CI_SYSTEM_PROMPT, TESTER_USER_PROMPT_FOOTER, TESTER_USER_PROMPT_HEADER
 
@@ -57,12 +57,13 @@ class TestAgent:
     def run_ci(self, task: dict, files: list[dict], summary: str) -> CIResult:
         """Write files, run pytest + pylint, commit on green (tester:ci role)."""
         config.print_agent_rule("Tester — CI", "tester", extra=f"{len(files)} file(s)")
+        root = get_project_root()
         _ensure_ci_env()
 
         written: list[Path] = []
         for f in files:
             path = _sanitize_path(f["path"])
-            p = config.ROOT / path
+            p = root / path
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(f["content"], encoding="utf-8")
             written.append(p)
@@ -87,12 +88,12 @@ class TestAgent:
         commit_msg = self._generate_commit_message(task, files, summary)
         config.console.print(f"[dim]  Commit message: {commit_msg}[/dim]")
 
-        rel_paths = [str(p.relative_to(config.ROOT)) for p in written]
-        subprocess.run(["git", "add", "--"] + rel_paths, cwd=str(config.ROOT), check=True)
+        rel_paths = [str(p.relative_to(root)) for p in written]
+        subprocess.run(["git", "add", "--"] + rel_paths, cwd=str(root), check=True)
 
         commit_result = subprocess.run(
             ["git", "commit", "-m", commit_msg],
-            cwd=str(config.ROOT),
+            cwd=str(root),
             capture_output=True,
             text=True,
         )
@@ -100,7 +101,7 @@ class TestAgent:
             config.console.print(f"[red]  git commit failed: {commit_result.stderr}[/red]")
             return CIResult(status="commit_failed", output=commit_result.stderr)
 
-        sha = _get_head_sha(config.ROOT)
+        sha = _get_head_sha(root)
         config.console.print(f"[bold green]  ✓ Committed {sha[:8]}: {commit_msg}[/bold green]")
         return CIResult(status="committed", sha=sha, commit_message=commit_msg)
 
@@ -134,7 +135,7 @@ class TestAgent:
 def _ensure_ci_env() -> None:
     """Provision the test environment on first use: venv, deps, tests scaffold."""
     console = config.console
-    backend = config.BACKEND
+    backend = get_project_root() / "backend"
 
     # ── 1. Backend venv ──────────────────────────────────────────────────────
     venv_dir = backend / ".venv"
@@ -190,9 +191,10 @@ def _ensure_ci_env() -> None:
 
 
 def _find_venv_bin(name: str) -> str:
+    backend = get_project_root() / "backend"
     candidates = [
-        config.BACKEND / ".venv" / "bin" / name,
-        config.BACKEND / "venv" / "bin" / name,
+        backend / ".venv" / "bin" / name,
+        backend / "venv" / "bin" / name,
     ]
     found = next((p for p in candidates if p.exists()), None)
     return str(found) if found else (shutil.which(name) or name)
@@ -227,17 +229,19 @@ def _run_subprocess(cmd: list[str], cwd: str, label: str, timeout: int = 300) ->
 def _run_pytest() -> tuple[int, str]:
     """Run pytest showing only failures (--tb=short -q)."""
     pytest_bin = _find_venv_bin("pytest")
+    backend = get_project_root() / "backend"
     cmd = [pytest_bin, "tests/", "--tb=short", "-q"]
-    return _run_subprocess(cmd, str(config.BACKEND), f"pytest ({pytest_bin})")
+    return _run_subprocess(cmd, str(backend), f"pytest ({pytest_bin})")
 
 
 def _run_pylint() -> tuple[int, str]:
     """Run pylint on the backend source."""
     pylint_bin = _find_venv_bin("pylint")
-    backend_src = config.BACKEND / "app"
-    target = str(backend_src) if backend_src.exists() else str(config.BACKEND)
+    backend = get_project_root() / "backend"
+    backend_src = backend / "app"
+    target = str(backend_src) if backend_src.exists() else str(backend)
     cmd = [pylint_bin, target, "--output-format=text", "--score=no"]
-    return _run_subprocess(cmd, str(config.BACKEND), f"pylint ({target})", timeout=120)
+    return _run_subprocess(cmd, str(backend), f"pylint ({target})", timeout=120)
 
 
 def _sanitize_path(path: str) -> str:
@@ -245,9 +249,9 @@ def _sanitize_path(path: str) -> str:
 
     Agents sometimes prefix paths with the project folder name (e.g.
     'habr-agentic/backend/foo.py'). Strip it so we always write relative
-    to config.ROOT.
+    to the project root.
     """
-    root_name = config.ROOT.name  # e.g. "habr-agentic"
+    root_name = get_project_root().name
     prefix = root_name + "/"
     if path.startswith(prefix):
         stripped = path[len(prefix):]

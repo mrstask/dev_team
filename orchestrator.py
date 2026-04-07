@@ -9,7 +9,7 @@ import config
 from clients import DashboardClient
 from dtypes import Status
 
-_db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+_db = DashboardClient(config.DASHBOARD_URL)
 
 _PRIORITY_COLOR = {"critical": "red", "high": "yellow", "medium": "blue", "low": "dim"}
 _STATUS_ORDER = Status.ALL

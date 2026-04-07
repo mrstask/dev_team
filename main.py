@@ -54,7 +54,7 @@ def board_cmd(status: str | None) -> None:
 @click.argument("task_id", type=int)
 def kick_cmd(task_id: int) -> None:
     """Move a backlog task into architect + action:todo to start processing."""
-    db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+    db = DashboardClient(config.DASHBOARD_URL)
     task = db.get_task(task_id)
 
     if task["status"] != Status.BACKLOG:
@@ -89,7 +89,7 @@ def pending_cmd() -> None:
     """List all tasks currently paused at a human gate."""
     from rich.table import Table
 
-    db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+    db = DashboardClient(config.DASHBOARD_URL)
     tasks = db.get_tasks()
     waiting = [t for t in tasks if Action.AWAIT_HUMAN in t.get("labels", [])]
 
@@ -122,7 +122,7 @@ def review_cmd(task_id: int) -> None:
     import json
     from core.spec_loader import spec_summary_for_stage
 
-    db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+    db = DashboardClient(config.DASHBOARD_URL)
     task = db.get_task(task_id)
 
     if Action.AWAIT_HUMAN not in task.get("labels", []):
@@ -183,7 +183,7 @@ def review_cmd(task_id: int) -> None:
 @click.argument("task_id", type=int)
 def approve_cmd(task_id: int) -> None:
     """Approve a human-gated task — releases it to the next pipeline stage."""
-    db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+    db = DashboardClient(config.DASHBOARD_URL)
     task = db.get_task(task_id)
 
     if Action.AWAIT_HUMAN not in task.get("labels", []):
@@ -204,7 +204,7 @@ def reject_cmd(task_id: int, feedback: str) -> None:
     """Reject a human-gated task with feedback — resets it to action:todo for retry."""
     import re
 
-    db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+    db = DashboardClient(config.DASHBOARD_URL)
     task = db.get_task(task_id)
 
     if Action.AWAIT_HUMAN not in task.get("labels", []):
@@ -249,7 +249,7 @@ def suggestions_cmd(status: str) -> None:
     """Print open prompt improvement suggestions grouped by agent role."""
     from rich.table import Table
 
-    db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+    db = DashboardClient(config.DASHBOARD_URL)
     items = db.get_suggestions(status=None if status == "all" else status)
 
     if not items:
@@ -310,7 +310,7 @@ def status_cmd() -> None:
 
     config.console.print()
     try:
-        d = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+        d = DashboardClient(config.DASHBOARD_URL)
         tasks = d.get_tasks()
         by_s: dict[str, int] = {}
         for t in tasks:
@@ -348,7 +348,7 @@ def _ensure_backends() -> None:
 def _sync_agents() -> None:
     """Register missing agent roles in the dashboard."""
     try:
-        d = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+        d = DashboardClient(config.DASHBOARD_URL)
         d.sync_agents(ROLES)
         config.console.print("[dim]Synced agents to dashboard.[/dim]")
     except Exception as e:

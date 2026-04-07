@@ -5,24 +5,54 @@ import httpx
 
 
 class DashboardClient:
-    def __init__(self, base_url: str, project_id: int):
+    def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
-        self.project_id = project_id
+        # Cache: project_id → project dict (root_path, name, etc.)
+        self._project_cache: dict[int, dict] = {}
 
-    def get_tasks(self, status: str | None = None) -> list[dict]:
+    # ── Project helpers ──────────────────────────────────────────────────────
+
+    def get_projects(self) -> list[dict]:
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(f"{self.base_url}/projects")
+            resp.raise_for_status()
+        return resp.json()
+
+    def get_project(self, project_id: int) -> dict:
+        """Return project dict (cached). Raises ValueError if not found."""
+        if project_id in self._project_cache:
+            return self._project_cache[project_id]
+        for p in self.get_projects():
+            self._project_cache[p["id"]] = p
+        if project_id not in self._project_cache:
+            raise ValueError(f"Project {project_id} not found in dashboard")
+        return self._project_cache[project_id]
+
+    def get_project_root(self, project_id: int) -> str | None:
+        """Return root_path for a project, or None if not set."""
+        return self.get_project(project_id).get("root_path")
+
+    # ── Task helpers ─────────────────────────────────────────────────────────
+
+    def get_tasks(self, status: str | None = None, project_id: int | None = None) -> list[dict]:
         with httpx.Client(timeout=30) as client:
             resp = client.get(f"{self.base_url}/tasks")
             resp.raise_for_status()
-        tasks = [t for t in resp.json() if t["project_id"] == self.project_id]
+        tasks = resp.json()
+        if project_id is not None:
+            tasks = [t for t in tasks if t["project_id"] == project_id]
         if status:
             tasks = [t for t in tasks if t["status"] == status]
         return tasks
 
     def get_task(self, task_id: int) -> dict:
-        for t in self.get_tasks():
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(f"{self.base_url}/tasks")
+            resp.raise_for_status()
+        for t in resp.json():
             if t["id"] == task_id:
                 return t
-        raise ValueError(f"Task {task_id} not found in project {self.project_id}")
+        raise ValueError(f"Task {task_id} not found")
 
     def move_task(self, task_id: int, status: str) -> dict:
         with httpx.Client(timeout=30) as client:

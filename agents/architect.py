@@ -15,12 +15,9 @@ from rich.panel import Panel
 
 import config
 from clients import ClaudeClient
-from core import ROLES, create_client, create_fallback_client, parse_json_response, run_react_loop, stream_chat_with_display
+from core import ROLES, create_client, create_fallback_client, get_project_root, parse_json_response, run_react_loop, stream_chat_with_display
 from dtypes import ArchitectResult, FileContent, ReviewResult, SubtaskProposal
 from prompts import ARCHITECT_RESEARCH_CONTEXT, ARCHITECT_USER_PROMPT, REVIEWER_USER_PROMPT_HEADER, STAGING_INSTRUCTION
-
-# Staging dir — used by claude-code backend; ReAct backend writes directly
-STAGING_DIR: Path = config.ROOT / "dev_team" / "_staging"
 
 
 class ArchitectAgent:
@@ -54,9 +51,11 @@ class ArchitectAgent:
 
     def _run_claude_code(self, prompt: str, task: dict, system_prompt: str | None = None) -> ArchitectResult | None:
         """Run via Claude Code SDK — agent has native file system access."""
-        if STAGING_DIR.exists():
-            shutil.rmtree(STAGING_DIR)
-        STAGING_DIR.mkdir(parents=True)
+        root = get_project_root()
+        staging_dir = root / "dev_team" / "_staging"
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        staging_dir.mkdir(parents=True)
 
         base = system_prompt or self.role_def["system_prompt"]
         system_prompt = base.strip() + STAGING_INSTRUCTION
@@ -67,17 +66,17 @@ class ArchitectAgent:
                 prompt,
                 system_prompt=system_prompt,
                 model=model,
-                cwd=str(config.ROOT),
+                cwd=str(root),
                 allowed_tools=["Read", "Glob", "Grep", "Write"],
                 max_turns=40,
             )
         except Exception as exc:
             config.console.print(f"[red]Architect error: {exc}[/red]")
-            shutil.rmtree(STAGING_DIR, ignore_errors=True)
+            shutil.rmtree(staging_dir, ignore_errors=True)
             return None
 
-        files = self._collect_staging_files()
-        shutil.rmtree(STAGING_DIR, ignore_errors=True)
+        files = self._collect_staging_files(staging_dir)
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
         if not files:
             config.console.print("[red]Architect wrote no files to staging.[/red]")
@@ -171,11 +170,11 @@ class ArchitectAgent:
         return result
 
     @staticmethod
-    def _collect_staging_files() -> list[FileContent]:
+    def _collect_staging_files(staging_dir: Path) -> list[FileContent]:
         files: list[FileContent] = []
-        for p in sorted(STAGING_DIR.rglob("*")):
+        for p in sorted(staging_dir.rglob("*")):
             if p.is_file():
-                rel = p.relative_to(STAGING_DIR)
+                rel = p.relative_to(staging_dir)
                 try:
                     content = p.read_text(encoding="utf-8")
                 except Exception:
@@ -254,7 +253,7 @@ def _format_research_context(research: dict) -> str:
 
 def _sanitize_path(path: str) -> str:
     """Strip accidental project-name prefix from paths."""
-    root_name = config.ROOT.name
+    root_name = get_project_root().name
     prefix = root_name + "/"
     if path.startswith(prefix):
         return path[len(prefix):]

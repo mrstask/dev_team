@@ -19,7 +19,7 @@ from prompts import (
 )
 from prompts.pm_analysis import PM_ANALYSIS_SYSTEM_PROMPT, PM_ANALYSIS_USER_PROMPT_HEADER
 
-_db = DashboardClient(config.DASHBOARD_URL, config.DASHBOARD_PROJECT_ID)
+_db = DashboardClient(config.DASHBOARD_URL)
 
 
 class PMAgent:

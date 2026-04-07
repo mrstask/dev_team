@@ -25,10 +25,21 @@ Requires a virtual environment (`.venv/`) with `pip install -r requirements.txt`
 
 - `OPENROUTER_API_KEY` — loaded from `.env` (parent project root)
 - Ollama must be running at `localhost:11434` (if any step uses ollama backend)
-- Dashboard API must be running at `localhost:8000/api` (project ID 3)
-- Target project root is one level up from `dev_team/`, set in `config.py` as `ROOT`
+- Dashboard API must be running at `localhost:8000/api`
+- Target project root is resolved dynamically per-task from the dashboard project's `root_path` field (via each task's `project_id`). No project-specific config needed in dev_team.
 
 ## Architecture
+
+### Multi-Project Support
+
+Dev team is project-agnostic. Each task in the dashboard belongs to a project (`project_id`), and each project has a `root_path` configured in the dashboard UI. When processing a task, the event loop:
+
+1. Reads `project_id` from the task
+2. Fetches the project's `root_path` via `DashboardClient.get_project_root()`
+3. Wraps all agent dispatch in `project_context(root)` — a thread-local context manager in `core/tools.py`
+4. All tool functions (`read_file`, `write_file`, `run_pytest`, etc.) resolve paths against `get_project_root()` instead of a global constant
+
+`DashboardClient` takes only `base_url` (no project_id). `get_tasks()` returns tasks from all projects by default, with an optional `project_id` filter.
 
 ### Event Loop (`event_loop.py`)
 
@@ -80,7 +91,7 @@ dev_team/
 ├── main.py              # CLI entry point (click)
 ├── event_loop.py        # Core autonomous loop, task dispatching, state transitions
 ├── orchestrator.py      # Board display utility for monitoring
-├── config.py            # All constants, paths, shared console
+├── config.py            # Constants, LLM config, shared console (no project-specific paths)
 ├── dtypes.py            # Pydantic models (Task, FileContent, ArchitectResult, etc.) + Status/Action constants
 ├── models.json          # LLM backend config per step (backend, model, fallback)
 │
@@ -118,7 +129,7 @@ dev_team/
 │   ├── react_loop.py    # Shared ReAct loop + text tool call extraction
 │   ├── roles.py         # Agent role definitions (imports prompts from prompts/)
 │   ├── spec_loader.py   # Loads role specs for agent configuration
-│   └── tools.py         # Tool implementations (read_file, write_files, submit_research, run_pytest, etc.)
+│   └── tools.py         # Tool implementations + project_context() thread-local for per-task root resolution
 │
 ├── plans/               # Persistent research docs and implementation plans (from slash commands)
 │   └── research/        # Research artifacts created by /research_codebase
@@ -130,21 +141,35 @@ dev_team/
         └── implement_plan.md     # /implement_plan — execute from a plan file
 ```
 
-### Context Storage (`_context/`)
+### Context Storage (`_context/`) — Typed Artifacts
 
-Agent output is persisted in `_context/{task_id}/` between pipeline stages.
+Agent output is persisted in `_context/{task_id}/` between pipeline stages. Each context file has a **Pydantic-validated schema** — validated on save and load to catch malformed agent output early.
 
-| File | Contents |
-|---|---|
-| `research.json` | ResearchAgent findings (relevant files, patterns, data flow, warnings) |
-| `architect.json` | Skeleton files, summary, subtask proposals, plan |
-| `skeleton_files.json` | Skeleton files copied to each subtask |
-| `developer.json` | Implementation files and summary |
-| `previous_files.json` | Files from previous attempt (for retry) |
-| `testing.json` | All files + CI result |
-| `error.log` | Exception traceback |
+| File | Pydantic Model | Contents |
+|---|---|---|
+| `research.json` | `ResearchContext` | Relevant files, patterns, data flow, warnings, summary |
+| `architect.json` | `ArchitectContext` | Skeleton files, summary, subtask proposals, plan |
+| `skeleton_files.json` | `SkeletonContext` | Skeleton files copied to each subtask |
+| `developer.json` | `DeveloperContext` | Implementation files and summary |
+| `previous_files.json` | `DeveloperContext` | Files from previous attempt (for retry) |
+| `testing.json` | `TestingContext` | All files + `CIResult` (enum status) + summary |
+| `feedback.json` | `FeedbackContext` | Structured review feedback entries |
+| `error.log` | *(plain text)* | Exception traceback |
 
-Cleared on task completion.
+Context models are defined in `dtypes.py`. Cleared on task completion.
+
+### State Machine & Transitions
+
+Status transitions are enforced via `VALID_TRANSITIONS` in `dtypes.py`. All transitions go through `_move_task(task, new_status)` which validates before calling the dashboard API.
+
+```
+backlog   → architect, failed
+architect → develop, failed
+develop   → testing, failed
+testing   → done, develop (retry), failed
+done      → (terminal)
+failed    → backlog (manual only)
+```
 
 ### CI — pytest + pylint
 
@@ -154,9 +179,11 @@ Cleared on task completion.
 
 No tox. Both tools are resolved from `.venv/` via `_find_venv_bin()`.
 
+CI outcomes use `CIStatus` enum: `COMMITTED`, `FAILED`, `COMMIT_FAILED` — no magic strings.
+
 ### LLM Backend Configuration (`models.json`)
 
-Each step's backend and model are configured independently. Example defaults:
+Each step's backend and model are configured independently. Validated at startup via `ModelsConfig` Pydantic model — invalid backend names, empty models, or missing required steps cause immediate `SystemExit`.
 
 | Step | Backend | Model |
 |---|---|---|
@@ -170,4 +197,10 @@ To switch to Ollama or Claude Code SDK for a step, change `"backend"` in `models
 
 ### Retry Handling
 
-Tracked via `retry:N` labels. Max 5 retries before `failed + error:max-retries`. On PM rejection or agent failure, retry counter increments and task resets to `action:todo` with feedback appended.
+Tracked via `retry:N` labels. Max 5 retries before `failed + error:max-retries`. On PM rejection or agent failure, retry counter increments and task resets to `action:todo`.
+
+Feedback is stored as structured `FeedbackContext` entries in `_context/{task_id}/feedback.json` — each entry records source, stage, retry count, and issues. This replaces the previous pattern of appending free text to the task description.
+
+### Tool State Isolation
+
+The ReAct loop's file accumulator is scoped via `tool_scope()` context manager in `core/tools.py`. Files are always cleaned up on exit — even on exceptions or LLM stalls — preventing cross-task data leaks.
