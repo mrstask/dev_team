@@ -1,7 +1,7 @@
 """DevAgent — ReAct loop over Ollama/OpenRouter with tool calling."""
 import config
 from core import ROLES, create_client, create_fallback_client, run_react_loop
-from dtypes import DeveloperResult, FileContent
+from dtypes import DeveloperResult, FeedbackContext, FileContent
 from prompts.developer import (
     DEVELOPER_FEEDBACK_PROMPT,
     DEVELOPER_PREVIOUS_FILES_HEADER,
@@ -30,12 +30,13 @@ class DevAgent:
         feedback: str = "",
         skeleton_files: list[FileContent] | None = None,
         previous_files: list[FileContent] | None = None,
+        feedback_ctx: FeedbackContext | None = None,
         on_loop_complete=None,
     ) -> DeveloperResult | None:
         """ReAct loop: read context -> write files."""
         messages = [
             {"role": "system", "content": self.role_def["system_prompt"]},
-            {"role": "user", "content": self._build_prompt(task, feedback, skeleton_files, previous_files)},
+            {"role": "user", "content": self._build_prompt(task, feedback, skeleton_files, previous_files, feedback_ctx)},
         ]
         config.print_agent_rule(self.role_def["name"], "developer")
 
@@ -50,10 +51,11 @@ class DevAgent:
 
     @staticmethod
     def _build_prompt(
-            task: dict,
+        task: dict,
         feedback: str = "",
         skeleton_files: list[FileContent] | None = None,
         previous_files: list[FileContent] | None = None,
+        feedback_ctx: FeedbackContext | None = None,
     ) -> str:
         labels = ", ".join(task.get("labels", []))
         prompt = DEVELOPER_TASK_PROMPT.format(
@@ -71,6 +73,12 @@ class DevAgent:
             prompt += DEVELOPER_PREVIOUS_FILES_HEADER.format(count=len(previous_files))
             for f in previous_files:
                 prompt += f"\n=== {f.path} ===\n{f.content}\n"
-        if feedback:
+        if feedback_ctx and feedback_ctx.entries:
+            prompt += "\nStructured feedback from previous review(s):\n"
+            for entry in feedback_ctx.entries:
+                prompt += f"\n[Retry {entry.retry}] {entry.source}:\n"
+                for issue in entry.issues:
+                    prompt += f"  - {issue}\n"
+        elif feedback:
             prompt += DEVELOPER_FEEDBACK_PROMPT.format(feedback=feedback)
         return prompt

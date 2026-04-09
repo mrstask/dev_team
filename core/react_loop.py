@@ -10,7 +10,7 @@ from collections.abc import Callable
 import config
 from clients import OllamaClient, OpenRouterClient
 from .llm import LLMRateLimitError, LLMStallError, stream_chat_with_display
-from .tools import TOOL_SPECS, dispatch
+from .tools import TOOL_SPECS, dispatch, tool_scope
 
 
 # ── ReAct loop ────────────────────────────────────────────────────────────────
@@ -45,6 +45,28 @@ def run_react_loop(
     console = config.console
     if tools is None:
         tools = TOOL_SPECS
+
+    with tool_scope():
+        return _run_react_loop_inner(
+            client, messages,
+            max_rounds=max_rounds, tools=tools,
+            temperature=temperature, fallback_client=fallback_client,
+            on_write_files=on_write_files, on_loop_complete=on_loop_complete,
+        )
+
+
+def _run_react_loop_inner(
+    client,
+    messages: list[dict],
+    *,
+    max_rounds: int,
+    tools: list[dict],
+    temperature: float,
+    fallback_client=None,
+    on_write_files=None,
+    on_loop_complete=None,
+) -> dict | None:
+    console = config.console
 
     for round_num in range(1, max_rounds + 1):
         console.print(f"[dim]  round {round_num}/{max_rounds}[/dim]")

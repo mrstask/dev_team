@@ -1,4 +1,5 @@
 """TestAgent — generates pytest unit tests and runs CI for approved implementation files."""
+import re
 import shutil
 import subprocess
 import sys
@@ -9,7 +10,14 @@ from rich.panel import Panel
 import config
 from core import create_client, create_fallback_client, run_react_loop, get_project_root
 from dtypes import CIResult, FileContent, TestResult
-from prompts import TESTER_AGENT_SYSTEM_PROMPT, TESTER_CI_SYSTEM_PROMPT, TESTER_USER_PROMPT_FOOTER, TESTER_USER_PROMPT_HEADER
+from prompts import (
+    TESTER_AGENT_SYSTEM_PROMPT,
+    TESTER_CI_SYSTEM_PROMPT,
+    TESTER_FIX_SYSTEM_PROMPT,
+    TESTER_FIX_USER_PROMPT,
+    TESTER_USER_PROMPT_FOOTER,
+    TESTER_USER_PROMPT_HEADER,
+)
 
 
 class TestAgent:
@@ -55,7 +63,11 @@ class TestAgent:
 
 
     def run_ci(self, task: dict, files: list[dict], summary: str) -> CIResult:
-        """Write files, run pytest + pylint, commit on green (tester:ci role)."""
+        """Write files, run pytest + pylint, commit on green (tester:ci role).
+
+        If pytest fails, enters an iterative fix loop: parse failing test files,
+        fix each one via a ReAct loop, re-run pytest — up to MAX_FIX_ROUNDS.
+        """
         config.print_agent_rule("Tester — CI", "tester", extra=f"{len(files)} file(s)")
         root = get_project_root()
         _ensure_ci_env()
@@ -70,13 +82,44 @@ class TestAgent:
             config.console.print(f"  [green]wrote[/green] {path}")
 
         pytest_rc, pytest_out = _run_pytest()
+
+        # ── Iterative test-fix loop ──────────────────────────────────────────
+        fix_round = 0
+        while pytest_rc != 0 and fix_round < _MAX_FIX_ROUNDS:
+            failing_tests = _parse_failing_tests(pytest_out)
+            if not failing_tests:
+                config.console.print("[yellow]  Could not parse failing tests from output.[/yellow]")
+                break
+
+            fix_round += 1
+            config.console.print(
+                f"\n[bold yellow]  Fix round {fix_round}/{_MAX_FIX_ROUNDS} — "
+                f"{len(failing_tests)} failing test file(s): {', '.join(failing_tests)}[/bold yellow]"
+            )
+
+            for test_file in failing_tests:
+                failure_snippet = _extract_failure_for_file(pytest_out, test_file)
+                fixed = self._fix_single_test(test_file, failure_snippet)
+                if fixed:
+                    # Re-run just this test file to verify the fix
+                    single_rc, single_out = _run_pytest_file(test_file)
+                    if single_rc == 0:
+                        config.console.print(f"  [green]✓[/green] {test_file} — fixed")
+                    else:
+                        config.console.print(f"  [red]✗[/red] {test_file} — still failing after fix")
+                else:
+                    config.console.print(f"  [yellow]⚠[/yellow] {test_file} — fix agent produced no output")
+
+            # Full suite re-run after fixing all files this round
+            pytest_rc, pytest_out = _run_pytest()
+
+        # ── Pylint (advisory) ────────────────────────────────────────────────
         pylint_rc, pylint_out = _run_pylint()
 
         combined_output = f"=== pytest ===\n{pytest_out}\n\n=== pylint ===\n{pylint_out}"
         last_lines = "\n".join(combined_output.splitlines()[-40:])
-        returncode = pytest_rc  # pylint failures are advisory; only pytest gates the commit
 
-        if returncode != 0:
+        if pytest_rc != 0:
             config.console.print(Panel(last_lines, title="[red]pytest FAILED[/red]", border_style="red"))
             return CIResult(status="failed", output=last_lines)
 
@@ -90,6 +133,9 @@ class TestAgent:
 
         rel_paths = [str(p.relative_to(root)) for p in written]
         subprocess.run(["git", "add", "--"] + rel_paths, cwd=str(root), check=True)
+        # Also stage any files modified by the fix loop (e.g. existing test files)
+        if fix_round > 0:
+            subprocess.run(["git", "add", "-u"], cwd=str(root), check=True)
 
         commit_result = subprocess.run(
             ["git", "commit", "-m", commit_msg],
@@ -104,6 +150,26 @@ class TestAgent:
         sha = _get_head_sha(root)
         config.console.print(f"[bold green]  ✓ Committed {sha[:8]}: {commit_msg}[/bold green]")
         return CIResult(status="committed", sha=sha, commit_message=commit_msg)
+
+    def _fix_single_test(self, test_file: str, failure_output: str) -> bool:
+        """Use a ReAct loop to fix a single failing test file. Returns True if agent produced output."""
+        console = config.console
+        config.print_agent_rule("Tester — Fix", "tester", extra=test_file)
+
+        messages = [
+            {"role": "system", "content": TESTER_FIX_SYSTEM_PROMPT},
+            {"role": "user", "content": TESTER_FIX_USER_PROMPT.format(
+                test_file=test_file,
+                failure_output=failure_output,
+            )},
+        ]
+
+        result = run_react_loop(
+            self.client, messages,
+            fallback_client=self.fallback_client,
+            max_rounds=15,
+        )
+        return result is not None
 
     def _generate_commit_message(self, task: dict, files: list[dict], summary: str) -> str:
         paths = ", ".join(f["path"] for f in files[:8])
@@ -131,6 +197,58 @@ class TestAgent:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+_MAX_FIX_ROUNDS = 3  # max full pytest→fix→rerun cycles
+
+
+def _parse_failing_tests(pytest_output: str) -> list[str]:
+    """Extract unique test file paths from pytest FAILED lines.
+
+    Parses lines like:
+        FAILED tests/test_foo.py::TestBar::test_baz
+    Returns deduplicated file paths like ['tests/test_foo.py'].
+    """
+    pattern = re.compile(r"FAILED\s+(tests/\S+?)::")
+    files = []
+    seen = set()
+    for match in pattern.finditer(pytest_output):
+        path = match.group(1)
+        if path not in seen:
+            seen.add(path)
+            files.append(path)
+    return files
+
+
+def _extract_failure_for_file(pytest_output: str, test_file: str) -> str:
+    """Extract the failure section(s) relevant to a specific test file."""
+    lines = pytest_output.splitlines()
+    relevant = []
+    capturing = False
+    for line in lines:
+        # Start capturing at a failure header that mentions our file
+        if test_file in line and ("FAILED" in line or "____" in line):
+            capturing = True
+        if capturing:
+            relevant.append(line)
+            # Stop at the next failure header for a different file or summary section
+            if line.startswith("FAILED") and test_file not in line:
+                relevant.pop()
+                break
+            if line.startswith("=") and "short test summary" in line:
+                break
+    # Fallback: if nothing captured, return last 30 lines
+    if not relevant:
+        return "\n".join(lines[-30:])
+    return "\n".join(relevant)
+
+
+def _run_pytest_file(test_file: str) -> tuple[int, str]:
+    """Run pytest on a single test file."""
+    pytest_bin = _find_venv_bin("pytest")
+    backend = get_project_root() / "backend"
+    cmd = [pytest_bin, test_file, "--tb=short", "-q"]
+    return _run_subprocess(cmd, str(backend), f"pytest {test_file}")
+
 
 def _ensure_ci_env() -> None:
     """Provision the test environment on first use: venv, deps, tests scaffold."""

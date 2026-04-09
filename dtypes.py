@@ -35,6 +35,16 @@ class Status:
     ALL = [BACKLOG, READY, RUNNING, REVIEW, ARCHITECT, DEVELOP, TESTING, DONE, FAILED]
 
 
+VALID_TRANSITIONS: dict[str, set[str]] = {
+    Status.BACKLOG:   {Status.ARCHITECT, Status.FAILED},
+    Status.ARCHITECT: {Status.DEVELOP, Status.DONE, Status.FAILED},  # DONE for parent completion
+    Status.DEVELOP:   {Status.TESTING, Status.FAILED},
+    Status.TESTING:   {Status.DONE, Status.DEVELOP, Status.FAILED},  # DEVELOP for rejection retry
+    Status.DONE:      set(),  # terminal
+    Status.FAILED:    {Status.BACKLOG},  # manual resurrection only
+}
+
+
 class Action:
     TODO        = "action:todo"
     REVIEW      = "action:review"
@@ -130,9 +140,9 @@ class CIResult(BaseModel):
 class ResearchContext(BaseModel):
     """Research agent output — structured codebase exploration findings."""
     relevant_files: list[str] = Field(default_factory=list, description="File paths relevant to the task")
-    patterns: str = Field(default="", description="Code patterns observed")
+    patterns: list[str] = Field(default_factory=list, description="Code patterns observed")
     data_flow: str = Field(default="", description="Data flow analysis")
-    warnings: str = Field(default="", description="Potential issues or risks")
+    warnings: list[str] = Field(default_factory=list, description="Potential issues or risks")
     summary: str = Field(default="", description="Executive summary of findings")
 
 

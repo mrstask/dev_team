@@ -15,7 +15,7 @@ from rich.panel import Panel
 
 import config
 from clients import ClaudeClient
-from core import ROLES, create_client, create_fallback_client, get_project_root, parse_json_response, run_react_loop, stream_chat_with_display
+from core import ARCHITECT_TOOL_SPECS, ROLES, create_client, create_fallback_client, get_project_root, parse_json_response, run_react_loop, stream_chat_with_display
 from dtypes import ArchitectResult, FileContent, ReviewResult, SubtaskProposal
 from prompts import ARCHITECT_RESEARCH_CONTEXT, ARCHITECT_USER_PROMPT, REVIEWER_USER_PROMPT_HEADER, STAGING_INSTRUCTION
 
@@ -95,6 +95,7 @@ class ArchitectAgent:
         raw = run_react_loop(
             self.client,
             messages,
+            tools=ARCHITECT_TOOL_SPECS,
             fallback_client=self.fallback_client,
         )
 

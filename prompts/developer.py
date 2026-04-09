@@ -8,9 +8,10 @@ DEVELOPER_TASK_PROMPT = (
     "2. Implement the task completely and correctly.\n"
     "3. Call write_file(path, content) ONCE PER FILE — one file per call, not all at once.\n"
     "4. After ALL files are written, call finish(summary) to complete the task.\n\n"
-    "After writing all files you MAY call run_pytest() to verify correctness.\n"
-    "Once tests pass (or you choose to skip), call finish() immediately.\n"
-    "Do NOT loop trying to fix test failures indefinitely — max 2 pytest attempts.\n"
+    "After writing all files you MAY call run_pytest(path='tests/test_YOUR_MODULE.py') to verify YOUR tests.\n"
+    "IMPORTANT: Only run your specific test file, NOT the full suite — pre-existing failures in other tests are not your problem.\n"
+    "Once your tests pass (or max 2 pytest attempts), call finish() immediately.\n"
+    "Do NOT loop trying to fix test failures in files you did not write.\n"
 )
 
 DEVELOPER_SKELETON_HEADER = "\nSkeleton files from Architect ({count} files):\n"
@@ -55,7 +56,8 @@ Pydantic best practices — apply these in every BaseModel you implement:
 CRITICAL — writing files:
 - Call write_file(path, content) ONCE PER FILE. Never bundle multiple files into one call.
 - After writing ALL files, call finish(summary) — this signals task completion.
-- After writing ALL files you MAY call run_pytest() once to verify. Max 2 attempts — then call finish().
+- After writing ALL files you MAY call run_pytest(path='tests/test_YOUR_MODULE.py') to verify YOUR specific test file. Max 2 attempts — then call finish().
+- Do NOT run the full test suite — pre-existing failures in other test files are not your concern.
 - Paths MUST be relative to the project root: start with 'backend/', 'frontend/', 'alembic/', etc.
 - NEVER include the project folder name in paths — e.g. WRONG: 'habr-agentic/backend/app/models/foo.py'
 - CORRECT: 'backend/app/models/foo.py'

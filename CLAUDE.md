@@ -129,7 +129,7 @@ dev_team/
 │   ├── react_loop.py    # Shared ReAct loop + text tool call extraction
 │   ├── roles.py         # Agent role definitions (imports prompts from prompts/)
 │   ├── spec_loader.py   # Loads role specs for agent configuration
-│   └── tools.py         # Tool implementations + project_context() thread-local for per-task root resolution
+│   └── tools.py         # Tool implementations + project_context() + tool_scope() + per-agent tool spec subsets
 │
 ├── plans/               # Persistent research docs and implementation plans (from slash commands)
 │   └── research/        # Research artifacts created by /research_codebase
@@ -160,11 +160,11 @@ Context models are defined in `dtypes.py`. Cleared on task completion.
 
 ### State Machine & Transitions
 
-Status transitions are enforced via `VALID_TRANSITIONS` in `dtypes.py`. All transitions go through `_move_task(task, new_status)` which validates before calling the dashboard API.
+Status transitions are enforced via `VALID_TRANSITIONS` dict in `dtypes.py`. All transitions go through `_move_task(task, new_status)` in `event_loop.py` which validates before calling the dashboard API. Invalid transitions raise `ValueError` with the current status, attempted status, and allowed set.
 
 ```
 backlog   → architect, failed
-architect → develop, failed
+architect → develop, done (parent completion), failed
 develop   → testing, failed
 testing   → done, develop (retry), failed
 done      → (terminal)
@@ -185,15 +185,15 @@ CI outcomes use `CIStatus = Literal["committed", "failed", "commit_failed"]` —
 
 Each step's backend and model are configured independently. Validated at startup via `ModelsConfig` Pydantic model — invalid backend names, empty models, or missing required steps cause immediate `SystemExit`.
 
-| Step | Backend | Model |
-|---|---|---|
-| researcher | openrouter | qwen/qwen3-6b-plus:free |
-| architect | openrouter | qwen/qwen3-6b-plus:free |
-| pm | openrouter | qwen/qwen3-6b-plus:free |
-| developer | openrouter | qwen/qwen3-6b-plus:free |
-| tester | openrouter | qwen/qwen3-6b-plus:free |
+| Step | Backend | Model | Fallback |
+|---|---|---|---|
+| researcher | openrouter | qwen/qwen3-30b-a3b:free | qwen/qwen3-4b:free |
+| architect | openrouter | qwen/qwen3-30b-a3b:free | qwen/qwen3-4b:free |
+| pm | openrouter | qwen/qwen3-30b-a3b:free | qwen/qwen3-4b:free |
+| developer | openrouter | qwen/qwen3-30b-a3b:free | qwen/qwen3-4b:free |
+| tester | openrouter | qwen/qwen3-30b-a3b:free | qwen/qwen3-4b:free |
 
-To switch to Ollama or Claude Code SDK for a step, change `"backend"` in `models.json`. No code changes needed.
+To switch to Ollama or Claude Code SDK for a step, change `"backend"` in `models.json`. No code changes needed. On HTTP 429 rate limits, the system transparently switches to the fallback model for that request.
 
 ### Pydantic Contracts & ai-ui Schema Alignment
 
@@ -217,4 +217,30 @@ Feedback is stored as structured `FeedbackContext` entries in `_context/{task_id
 
 ### Tool State Isolation
 
-The ReAct loop's file accumulator is scoped via `tool_scope()` context manager in `core/tools.py`. Files are always cleaned up on exit — even on exceptions or LLM stalls — preventing cross-task data leaks.
+The ReAct loop's file accumulator is scoped via `tool_scope()` context manager in `core/tools.py`:
+- `_written_files` (thread-local) tracks files for `finish()` return — cleared on scope entry and exit
+- `_written_paths` (thread-local) tracks absolute disk paths of all `write_file()` calls — used by `_rollback_written_files()` to delete files from disk when an agent fails without calling `finish()`
+- Files are always cleaned up on exit — even on exceptions or LLM stalls — preventing cross-task data leaks
+
+### Tool Spec Subsets
+
+Each agent role gets only the tools it needs (`core/tools.py`):
+- `TOOL_SPECS` — full set: `read_file`, `list_files`, `search_code`, `write_file`, `run_pytest`, `run_pylint`, `finish`
+- `ARCHITECT_TOOL_SPECS` — excludes `run_pytest` and `run_pylint` (architects design, they don't test)
+- `RESEARCH_TOOL_SPECS` — read-only: `read_file`, `list_files`, `search_code`, `submit_research`
+
+### Research Auto-Submit
+
+If the research agent fails to call `submit_research()` (common with weak models), `ResearchAgent.run()` auto-extracts a research artifact from the conversation — file paths from `read_file` calls and file listings from `list_files` results. This ensures the architect always gets some context.
+
+### File Rollback on Agent Failure
+
+When the architect writes files to disk via `write_file()` during its ReAct loop but fails to call `finish()`, those files would persist on disk and confuse subsequent retry attempts. `_rollback_written_files()` in `event_loop.py` deletes all files written during the current `tool_scope` when the architect produces no valid output.
+
+### Typed Context Helpers
+
+`_save_typed_context(task_id, key, model)` and `_load_typed_context(task_id, key, model_cls)` in `event_loop.py` provide Pydantic-validated context persistence. `_load_typed_context` returns `None` and logs an error on `ValidationError` instead of crashing with a `KeyError`.
+
+### Structured Feedback
+
+Review feedback is stored as `FeedbackContext` in `_context/{task_id}/feedback.json` alongside the legacy description-append. Each `FeedbackEntry` records source, stage, retry count, and issues. The developer agent receives structured feedback entries in its prompt, ordered by retry count.

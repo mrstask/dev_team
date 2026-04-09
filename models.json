@@ -1,27 +1,27 @@
 {
   "researcher": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus:free",
-    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
+    "model": "google/gemma-4-26b-a4b-it",
+    "fallback": {"backend": "openrouter", "model": "minimax/minimax-m2.5"}
   },
   "architect": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus:free",
-    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
+    "model": "google/gemma-4-26b-a4b-it",
+    "fallback": {"backend": "openrouter", "model": "minimax/minimax-m2.5"}
   },
   "pm": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus:free",
-    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
+    "model": "google/gemma-4-26b-a4b-it",
+    "fallback": {"backend": "openrouter", "model": "minimax/minimax-m2.5"}
   },
   "developer": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus:free",
-    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
+    "model": "google/gemma-4-26b-a4b-it",
+    "fallback": {"backend": "openrouter", "model": "minimax/minimax-m2.5"}
   },
   "tester": {
     "backend": "openrouter",
-    "model": "qwen/qwen3.6-plus:free",
-    "fallback": {"backend": "openrouter", "model": "xiaomi/mimo-v2-flash"}
+    "model": "google/gemma-4-26b-a4b-it",
+    "fallback": {"backend": "openrouter", "model": "minimax/minimax-m2.5"}
   }
 }

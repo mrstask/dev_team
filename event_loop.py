@@ -26,10 +26,18 @@ from rich.rule import Rule
 import config
 from agents import ClaudeAgent, DevAgent, PMAgent, ResearchAgent, TestAgent
 from clients import DashboardClient
-from core import get_role_for_task, project_context, get_project_root
+from core import get_role_for_task, get_written_paths, project_context, get_project_root
+from typing import TypeVar
+
+from pydantic import BaseModel, ValidationError
+
+_T = TypeVar("_T", bound=BaseModel)
+
 from dtypes import (
-    Action, ArchitectResult, CIResult, DeveloperResult, FileContent,
-    LabelPrefix, ReactLoopSummary, Status, TestingContext, ToolCallRecord,
+    Action, ArchitectResult, CIResult, DeveloperResult, FeedbackContext,
+    FeedbackEntry, FileContent, LabelPrefix, ReactLoopSummary,
+    ResearchContext, Status, TestingContext, ToolCallRecord,
+    VALID_TRANSITIONS,
 )
 
 _db = DashboardClient(config.DASHBOARD_URL)
@@ -47,6 +55,21 @@ def _refresh_agent_cache() -> None:
         _agent_id_cache = _db.get_agent_ids()
     except Exception:
         pass
+
+
+# ── State machine ────────────────────────────────────────────────────────────
+
+def _move_task(task: dict, new_status: str) -> None:
+    """Validated status transition — raises ValueError on invalid moves."""
+    current = task["status"]
+    allowed = VALID_TRANSITIONS.get(current, set())
+    if new_status not in allowed:
+        raise ValueError(
+            f"Invalid transition: {current} → {new_status}. "
+            f"Allowed: {allowed}"
+        )
+    _db.move_task(task["id"], new_status)
+    task["status"] = new_status
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -190,7 +213,7 @@ def _process_task(task: dict) -> None:
         console.print(f"[red]Task #{tid} exceeded max retries ({config.MAX_TASK_RETRIES}). Marking failed.[/red]")
         _replace_action(task, None)
         _add_label(task, f"{LabelPrefix.ERROR}max-retries")
-        _db.move_task(tid, Status.FAILED)
+        _move_task(task, Status.FAILED)
         return
 
     _open_run_ids: list[int] = []
@@ -233,7 +256,7 @@ def _process_task(task: dict) -> None:
                 _db.__class__.update_run(_db, run_id, "failed", error_message=str(exc))
             _replace_action(task, None)
             _add_label(task, f"{LabelPrefix.ERROR}exception")
-            _db.move_task(tid, Status.FAILED)
+            _move_task(task, Status.FAILED)
         finally:
             _db.create_run = _orig_create_run
             _db.update_run = _db.__class__.update_run.__get__(_db)
@@ -261,6 +284,28 @@ def _apply_human_gate(task: dict, gate_name: str) -> bool:
     return False
 
 
+# ── File rollback ────────────────────────────────────────────────────────────
+
+def _rollback_written_files(console) -> None:
+    """Delete files written to disk during the current tool_scope.
+
+    Called when an agent (e.g., architect) writes files via write_file() but
+    fails to call finish() — the files would otherwise persist on disk and
+    confuse subsequent retry attempts.
+    """
+    paths = get_written_paths()
+    if not paths:
+        return
+    for p in paths:
+        try:
+            if p.exists():
+                p.unlink()
+                console.print(f"  [dim]rollback: deleted {p}[/dim]")
+        except Exception as e:
+            console.print(f"  [yellow]rollback failed for {p}: {e}[/yellow]")
+    console.print(f"  [dim]Rolled back {len(paths)} file(s) from failed attempt.[/dim]")
+
+
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 def _handle_architect_todo(task: dict) -> None:
@@ -271,7 +316,7 @@ def _handle_architect_todo(task: dict) -> None:
     research_run_id = _db.create_run(task["id"], _agent_id_cache.get("researcher:explore"), "research")
     research = ResearchAgent().run(task)
     if research:
-        _save_context(task["id"], "research", research)
+        _save_typed_context(task["id"], "research", ResearchContext.model_validate(research))
         _db.update_run(research_run_id, "completed",
                        output_summary=research.get("summary", "")[:200])
     else:
@@ -284,12 +329,13 @@ def _handle_architect_todo(task: dict) -> None:
 
     if not result or not result.files:
         console.print("[red]Architect produced no output.[/red]")
+        _rollback_written_files(console)
         _db.update_run(run_id, "failed", error_message="No output produced")
         _increment_retry(task)
         _replace_action(task, Action.TODO)
         return
 
-    _save_context(task["id"], "architect", result.model_dump())
+    _save_typed_context(task["id"], "architect", result)
     _db.update_run(
         run_id, "completed",
         output_summary=f"{len(result.files)} file(s): {(result.summary or '')[:200]}",
@@ -311,13 +357,11 @@ def _handle_architect_todo(task: dict) -> None:
 def _handle_architect_review(task: dict) -> None:
     """Auto-approve architect output → create subtasks (PM review skipped)."""
     console = config.console
-    raw = _load_context(task["id"], "architect")
-    if not raw:
+    ctx = _load_typed_context(task["id"], "architect", ArchitectResult)
+    if not ctx:
         console.print("[red]No architect context found. Resetting to action:todo.[/red]")
         _replace_action(task, Action.TODO)
         return
-
-    ctx = ArchitectResult.model_validate(raw)
 
     subtask_ids = []
     for position, st in enumerate(ctx.subtasks):
@@ -360,8 +404,10 @@ def _handle_develop_todo(task: dict) -> None:
 
     skeleton_raw = _load_context(task["id"], "skeleton_files")
     previous_raw = _load_context(task["id"], "previous_files")
-    skeleton_files = [FileContent.model_validate(f) for f in skeleton_raw] if skeleton_raw else None
-    previous_files = [FileContent.model_validate(f) for f in previous_raw] if previous_raw else None
+    skeleton_files = [FileContent.model_validate(f) for f in skeleton_raw] if isinstance(skeleton_raw, list) else None
+    previous_files = [FileContent.model_validate(f) for f in previous_raw] if isinstance(previous_raw, list) else None
+
+    fb_ctx = _load_typed_context(task["id"], "feedback", FeedbackContext)
 
     def _save_developer_loop(messages: list[dict]) -> None:
         _db.log_event(task["id"], "react_loop:developer", _summarize_react_loop(messages))
@@ -371,6 +417,7 @@ def _handle_develop_todo(task: dict) -> None:
         feedback="",
         skeleton_files=skeleton_files if not previous_files else None,
         previous_files=previous_files,
+        feedback_ctx=fb_ctx,
         on_loop_complete=_save_developer_loop,
     )
 
@@ -381,7 +428,7 @@ def _handle_develop_todo(task: dict) -> None:
         _replace_action(task, Action.TODO)
         return
 
-    _save_context(task["id"], "developer", result.model_dump())
+    _save_typed_context(task["id"], "developer", result)
     _db.update_run(
         run_id, "completed",
         output_summary=f"{len(result.files)} file(s): {(result.summary or '')[:200]}",
@@ -391,7 +438,7 @@ def _handle_develop_todo(task: dict) -> None:
         "file_count": len(result.files),
         "files": [f.path for f in result.files],
         "summary": result.summary,
-        "had_previous_files": _load_context(task["id"], "previous_files") is not None,
+        "had_previous_files": previous_files is not None,
     })
     if _apply_human_gate(task, "develop_output"):
         return
@@ -402,14 +449,13 @@ def _handle_develop_todo(task: dict) -> None:
 def _handle_develop_review(task: dict) -> None:
     """Auto-approve developer output → move to testing (code review + PM review skipped)."""
     console = config.console
-    raw = _load_context(task["id"], "developer")
-    if not raw:
+    ctx = _load_typed_context(task["id"], "developer", DeveloperResult)
+    if not ctx:
         console.print("[red]No developer context found. Resetting to action:todo.[/red]")
         _replace_action(task, Action.TODO)
         return
-    DeveloperResult.model_validate(raw)  # validate structure; we don't need the result here
 
-    _db.move_task(task["id"], Status.TESTING)
+    _move_task(task, Status.TESTING)
     _replace_action(task, Action.TODO)
     _db.log_event(task["id"], "develop_review", {"auto_approved": True})
     console.print("[bold green]Auto-approved developer output. Moving to testing.[/bold green]")
@@ -419,15 +465,13 @@ def _handle_testing_todo(task: dict) -> None:
     """Run TestAgent + CIAgent. Set action:review for PM."""
     console = config.console
     run_id = _db.create_run(task["id"], _agent_id_cache.get("tester:unit-tests"), "testing")
-    raw = _load_context(task["id"], "developer")
-    if not raw:
+    dev_ctx = _load_typed_context(task["id"], "developer", DeveloperResult)
+    if not dev_ctx:
         console.print("[red]No developer context for testing. Moving back to develop.[/red]")
         _db.update_run(run_id, "failed", error_message="No developer context for testing")
-        _db.move_task(task["id"], Status.DEVELOP)
+        _move_task(task, Status.DEVELOP)
         _replace_action(task, Action.TODO)
         return
-
-    dev_ctx = DeveloperResult.model_validate(raw)
     files_raw = [f.model_dump() for f in dev_ctx.files]
 
     def _save_tester_loop(messages: list[dict]) -> None:
@@ -443,7 +487,7 @@ def _handle_testing_todo(task: dict) -> None:
         ci_result=ci_result,
         summary=dev_ctx.summary,
     )
-    _save_context(task["id"], "testing", testing_ctx.model_dump())
+    _save_typed_context(task["id"], "testing", testing_ctx)
 
     _db.update_run(
         run_id, "completed",
@@ -468,14 +512,12 @@ def _handle_testing_review(task: dict) -> None:
     """PM reviews test results. Approve → done. Reject → back to develop."""
     console = config.console
     run_id = _db.create_run(task["id"], _agent_id_cache.get("pm:testing-review"), "pm-review")
-    raw = _load_context(task["id"], "testing")
-    if not raw:
+    ctx = _load_typed_context(task["id"], "testing", TestingContext)
+    if not ctx:
         console.print("[red]No testing context found. Resetting to action:todo.[/red]")
         _db.update_run(run_id, "failed", error_message="No testing context found")
         _replace_action(task, Action.TODO)
         return
-
-    ctx = TestingContext.model_validate(raw)
     files_raw = [f.model_dump() for f in ctx.files]
     ci_output = _compact_ci_output(ctx.ci_result.output or "")
 
@@ -487,7 +529,7 @@ def _handle_testing_review(task: dict) -> None:
             _db.log_event(task["id"], "pm:testing_review", {"approved": True, "sha": ctx.ci_result.sha})
             _clear_context(task["id"])
             _replace_action(task, None)
-            _db.move_task(task["id"], Status.DONE)
+            _move_task(task, Status.DONE)
             _db.update_run(run_id, "completed", output_summary=f"Approved — task done. SHA: {ctx.ci_result.sha or ''}")
             console.print(f"[bold green]✓ Task #{task['id']} done![/bold green]")
             _update_claude_md(task, files_raw, ctx.summary)
@@ -495,7 +537,7 @@ def _handle_testing_review(task: dict) -> None:
             if task.get("parent_task_id"):
                 _check_single_parent(task["parent_task_id"])
         else:
-            _db.move_task(task["id"], Status.DEVELOP)
+            _move_task(task, Status.DEVELOP)
             _save_context(task["id"], "previous_files", files_raw)
             _append_feedback(task, f"CI status: {ctx.ci_result.status}. {ci_output[-500:]}", "CI did not commit")
             _increment_retry(task)
@@ -508,7 +550,7 @@ def _handle_testing_review(task: dict) -> None:
             })
             console.print("[yellow]PM approved but CI didn't commit. Back to develop.[/yellow]")
     else:
-        _db.move_task(task["id"], Status.DEVELOP)
+        _move_task(task, Status.DEVELOP)
         non_test_files = [f.model_dump() for f in ctx.files if not f.path.startswith("backend/tests/")]
         _save_context(task["id"], "previous_files", non_test_files)
         feedback = decision.feedback or ""
@@ -539,7 +581,11 @@ def _check_parent_completions(all_tasks: list[dict]) -> None:
         if parent and parent["status"] not in (Status.DONE, Status.FAILED):
             subtasks = [t for t in all_tasks if t.get("parent_task_id") == pid]
             if subtasks and all(t["status"] == Status.DONE for t in subtasks):
-                _db.move_task(pid, Status.DONE)
+                try:
+                    _move_task(parent, Status.DONE)
+                except ValueError:
+                    console.print(f"[yellow]Parent #{pid} cannot transition to done from {parent['status']}[/yellow]")
+                    continue
                 console.print(f"[bold green]✓ Parent task #{pid} completed (all subtasks done).[/bold green]")
 
 
@@ -547,7 +593,12 @@ def _check_single_parent(parent_task_id: int) -> None:
     """Check if a specific parent's subtasks are all done."""
     subtasks = _db.get_subtasks(parent_task_id)
     if subtasks and all(t["status"] == Status.DONE for t in subtasks):
-        _db.move_task(parent_task_id, Status.DONE)
+        parent = _db.get_task(parent_task_id)
+        try:
+            _move_task(parent, Status.DONE)
+        except ValueError:
+            config.console.print(f"[yellow]Parent #{parent_task_id} cannot transition to done from {parent['status']}[/yellow]")
+            return
         config.console.print(f"[bold green]✓ Parent task #{parent_task_id} completed (all subtasks done).[/bold green]")
 
 
@@ -595,7 +646,16 @@ def _increment_retry(task: dict) -> None:
 # ── Feedback helpers ──────────────────────────────────────────────────────────
 
 def _append_feedback(task: dict, feedback: str, source: str) -> None:
-    """Append review/PM feedback to task description."""
+    """Store structured feedback in context and append summary to task description."""
+    fb_ctx = _load_typed_context(task["id"], "feedback", FeedbackContext) or FeedbackContext()
+    fb_ctx = FeedbackContext(entries=list(fb_ctx.entries) + [FeedbackEntry(
+        source=source,
+        stage=task.get("status", ""),
+        retry=_get_retry_count(task),
+        issues=[feedback] if feedback else [],
+    )])
+    _save_typed_context(task["id"], "feedback", fb_ctx)
+    # Also append to description for backward compat with agents reading description
     fresh = _db.get_task(task["id"])
     _db.append_review_feedback(task["id"], fresh, {
         "issues": [feedback] if feedback else [],
@@ -656,6 +716,12 @@ def _save_context(task_id: int, key: str, data) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _save_typed_context(task_id: int, key: str, model: BaseModel) -> None:
+    """Save a Pydantic model to the context store."""
+    path = _context_dir(task_id) / f"{key}.json"
+    path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
+
+
 def _load_context(task_id: int, key: str):
     """Load context data. Returns None if not found."""
     path = config.CONTEXT_DIR / str(task_id) / f"{key}.json"
@@ -664,6 +730,19 @@ def _load_context(task_id: int, key: str):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
+        return None
+
+
+def _load_typed_context(task_id: int, key: str, model_cls: type[_T]) -> _T | None:
+    """Load and validate context data against a Pydantic model."""
+    path = config.CONTEXT_DIR / str(task_id) / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return model_cls.model_validate(data)
+    except (json.JSONDecodeError, ValidationError) as e:
+        config.console.print(f"[red]Invalid context '{key}' for #{task_id}: {e}[/red]")
         return None
 
 

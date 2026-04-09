@@ -38,6 +38,42 @@ def project_context(root: Path):
     finally:
         clear_project_root()
 
+# ── Scoped file accumulator ───────────────────────────────────────────────────
+
+def _get_written_files() -> list[dict]:
+    if not hasattr(_local, "written_files"):
+        _local.written_files = []
+    return _local.written_files
+
+
+def _get_written_paths() -> list[Path]:
+    """Return the list of absolute paths written to disk in the current scope."""
+    if not hasattr(_local, "written_paths"):
+        _local.written_paths = []
+    return _local.written_paths
+
+
+def get_written_paths() -> list[Path]:
+    """Public accessor — returns a copy of absolute paths written in the current tool_scope."""
+    return list(_get_written_paths())
+
+
+@contextmanager
+def tool_scope():
+    """Context manager that ensures written_files is cleared after use.
+
+    Wraps every run_react_loop() invocation so that files from a failed/stalled
+    task never leak into the next task's output.
+    """
+    _get_written_files().clear()
+    _get_written_paths().clear()
+    try:
+        yield
+    finally:
+        _get_written_files().clear()
+        _get_written_paths().clear()
+
+
 # ── Ollama tool specs (function calling) ───────────────────────────────────────
 
 TOOL_SPECS: list[dict] = [
@@ -46,9 +82,7 @@ TOOL_SPECS: list[dict] = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a file's contents. Default reads up to 100000 chars — enough for most files in one call. "
-                "NEVER use limit < 5000; always read as much as possible per call to avoid looping. "
-                "If the file is still truncated after one call, use offset to read the next chunk. "
+                "Read a file's contents (up to 100 000 chars). "
                 "Paths are relative to the project root. "
                 "Use prefix 'lg_dashboard:' to read from the langgraph_dashboard project."
             ),
@@ -63,14 +97,6 @@ TOOL_SPECS: list[dict] = [
                             "'lg_dashboard:frontend/src/lib/api.ts'"
                         ),
                     },
-                    "offset": {
-                        "type": "integer",
-                        "description": "Character offset to start reading from (default: 0). Use when a previous read was truncated.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max characters to return (default: 100000). Never set below 5000.",
-                    },
                 },
                 "required": ["path"],
             },
@@ -80,7 +106,11 @@ TOOL_SPECS: list[dict] = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files matching a glob pattern.",
+            "description": (
+                "List files matching a glob pattern. "
+                "IMPORTANT: '**' alone matches only directories — "
+                "always end with a filename pattern like '**/*.py' or '**/*'."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -88,8 +118,9 @@ TOOL_SPECS: list[dict] = [
                         "type": "string",
                         "description": (
                             "Glob pattern relative to project root. "
-                            "Examples: 'backend/app/**/*.py', "
-                            "'lg_dashboard:frontend/src/**/*.tsx'"
+                            "ALWAYS use **/*.ext or **/* — never bare **. "
+                            "Examples: 'backend/app/**/*.py', 'backend/**/*', "
+                            "'*.py', 'lg_dashboard:frontend/src/**/*.tsx'"
                         ),
                     }
                 },
@@ -101,7 +132,7 @@ TOOL_SPECS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_code",
-            "description": "Search for a text or regex pattern in code files (grep -rn).",
+            "description": "Search for a text or regex pattern in code files (grep -rn). Returns matching file paths.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -158,14 +189,24 @@ TOOL_SPECS: list[dict] = [
         "function": {
             "name": "run_pytest",
             "description": (
-                "Run the pytest test suite (backend/tests/). "
+                "Run pytest tests. "
                 "Returns pass/fail status and failed test output only. "
                 "Use this to verify your implementation before calling finish(). "
-                "Max 2 attempts — then call finish() regardless."
+                "Max 2 attempts — then call finish() regardless. "
+                "Pass a specific test file path to run only that file instead of the full suite."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Optional test file path relative to backend/, "
+                            "e.g. 'tests/test_pipeline_utils.py'. "
+                            "If omitted, runs the full test suite (tests/)."
+                        ),
+                    },
+                },
                 "required": [],
             },
         },
@@ -228,7 +269,8 @@ def _resolve(path: str) -> tuple[Path, str]:
 _SKIP_DIRS = {"__pycache__", "node_modules", ".venv", ".git", ".mypy_cache", "dist", "build"}
 
 
-def read_file(path: str, offset: int = 0, limit: int = 100_000) -> str:
+def read_file(path: str) -> str:
+    _MAX_CHARS = 100_000
     base, rel = _resolve(path)
     p = base / rel
     if not p.exists():
@@ -237,15 +279,9 @@ def read_file(path: str, offset: int = 0, limit: int = 100_000) -> str:
         return f"ERROR: Not a file: {path}"
     try:
         content = p.read_text(encoding="utf-8")
-        total = len(content)
-        chunk = content[offset:offset + limit]
-        remaining = total - offset - len(chunk)
-        suffix = (
-            f"\n\n[...truncated — showing chars {offset}–{offset + len(chunk)} of {total}. "
-            f"Call read_file(path='{path}', offset={offset + len(chunk)}) to read the next chunk.]"
-            if remaining > 0 else ""
-        )
-        return chunk + suffix
+        if len(content) > _MAX_CHARS:
+            return content[:_MAX_CHARS] + f"\n\n[...truncated at {_MAX_CHARS} of {len(content)} chars]"
+        return content
     except Exception as e:
         return f"ERROR reading {path}: {e}"
 
@@ -309,19 +345,17 @@ def write_file(path: str, content: str) -> str:
         target = root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+        _get_written_paths().append(target)
         return f"OK: wrote {path}"
     except Exception as e:
         return f"ERROR writing {path}: {e}"
 
 
-# Accumulator for files written via write_file() in the current loop iteration
-_written_files: list[dict] = []
-
-
 def finish(summary: str) -> dict:
     """Signal task completion — collects all write_file() calls made this turn."""
-    files = list(_written_files)
-    _written_files.clear()
+    wf = _get_written_files()
+    files = list(wf)
+    wf.clear()
     return {"status": "pending_review", "files": files, "summary": summary, "written": [f["path"] for f in files]}
 
 
@@ -392,12 +426,19 @@ def _run_tool_subprocess(cmd: list[str], cwd: str, label: str, timeout: int = 30
         return f"ERROR: {e}"
 
 
-def run_pytest() -> str:
-    """Run pytest showing only failures (--tb=short -q). Returns status + output."""
+def run_pytest(path: str = "") -> str:
+    """Run pytest showing only failures (--tb=short -q). Returns status + output.
+
+    Args:
+        path: Optional test file path relative to backend/ (e.g. 'tests/test_foo.py').
+              If empty, runs the full test suite.
+    """
     pytest_bin = _find_venv_bin("pytest")
     backend = get_project_root() / "backend"
-    cmd = [pytest_bin, "tests/", "--tb=short", "-q"]
-    return _run_tool_subprocess(cmd, str(backend), "pytest")
+    target = path if path else "tests/"
+    label = f"pytest {target}" if path else "pytest"
+    cmd = [pytest_bin, target, "--tb=short", "-q"]
+    return _run_tool_subprocess(cmd, str(backend), label)
 
 
 def run_pylint() -> str:
@@ -414,8 +455,7 @@ def run_pylint() -> str:
 
 def dispatch(name: str, args: dict) -> Any:
     if name == "read_file":
-        limit = max(5_000, int(args.get("limit", 100_000)))
-        return read_file(args.get("path", ""), int(args.get("offset", 0)), limit)
+        return read_file(args.get("path", ""))
     if name == "list_files":
         return list_files(args.get("pattern", ""))
     if name == "search_code":
@@ -425,14 +465,14 @@ def dispatch(name: str, args: dict) -> Any:
         content = args.get("content", "")
         result = write_file(path, content)
         if result.startswith("OK:"):
-            _written_files.append({"path": path, "content": content})
+            _get_written_files().append({"path": path, "content": content})
         return result
     if name == "finish":
         return finish(args.get("summary", ""))
     if name == "write_files":
         return write_files(args.get("files", []), args.get("summary", ""))
     if name == "run_pytest":
-        return run_pytest()
+        return run_pytest(args.get("path", ""))
     if name == "run_pylint":
         return run_pylint()
     if name in ("run_tox", "run_tox_lint", "run_tests"):
@@ -448,6 +488,14 @@ def submit_research(findings: str) -> dict:
     """Terminal tool for ResearchAgent — wraps findings in a pending_review envelope."""
     return {"status": "pending_review", "files": [], "summary": findings, "written": []}
 
+
+# ── Tool subsets per agent role ────────────────────────────────────────────────
+
+_ARCHITECT_EXCLUDED_TOOLS = {"run_pytest", "run_pylint"}
+
+ARCHITECT_TOOL_SPECS: list[dict] = [
+    s for s in TOOL_SPECS if s["function"]["name"] not in _ARCHITECT_EXCLUDED_TOOLS
+]
 
 _RESEARCH_TOOL_NAMES = {"read_file", "list_files", "search_code"}
 
