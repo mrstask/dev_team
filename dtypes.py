@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -190,6 +190,35 @@ class ReactLoopSummary(BaseModel):
     errors: list[str] = Field(default_factory=list, description="Error messages encountered")
     outcome: ReactOutcome = Field(description="How the loop terminated")
     finish_summary: str = Field(default="", description="Summary passed to finish() if called")
+
+
+# ── A2A communication log — local protocol envelope for inspector integration ─
+
+class A2AAttachment(BaseModel):
+    """Reference to a task artifact or context file attached to an A2A message."""
+    model_config = ConfigDict(frozen=True)
+    label: str = Field(description="Human-readable attachment label")
+    path: str = Field(description="Absolute or repo-relative file path")
+    media_type: str = Field(default="application/json", description="Attachment media type")
+
+
+class A2AMessage(BaseModel):
+    """Persisted internal A2A-style message used to build inspector task history."""
+    model_config = ConfigDict(frozen=True)
+    id: str = Field(description="Unique message identifier")
+    protocol: str = Field(default="a2a-protocol.org/v0.2.6", description="A2A spec version represented")
+    created_at: datetime = Field(description="UTC timestamp for the message")
+    kind: str = Field(description="Message kind: request, handoff, review, decision, system")
+    from_agent: str = Field(description="Logical sender")
+    to_agent: str = Field(description="Logical recipient")
+    task_id: int = Field(description="Dashboard task ID")
+    task_title: str = Field(default="", description="Task title snapshot")
+    task_status: str = Field(default="", description="Task status snapshot when message was recorded")
+    priority: str = Field(default="", description="Task priority snapshot")
+    parent_task_id: int | None = Field(default=None, description="Parent task ID for subtasks")
+    summary: str = Field(default="", description="Short summary of the communication")
+    payload: dict[str, Any] = Field(default_factory=dict, description="Structured message payload")
+    attachments: list[A2AAttachment] = Field(default_factory=list, description="Referenced artifacts")
 
 
 # ── Models.json validation ───────────────────────────────────────────────────

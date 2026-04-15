@@ -98,6 +98,12 @@ RETRY_DIR = _here / "_retry"
 # Broader context storage — architect output, PM review data, retry files
 CONTEXT_DIR = _here / "_context"
 
+# A2A communication log and gateway defaults
+A2A_DIR = _here / "_a2a"
+A2A_MESSAGES_PATH = A2A_DIR / "messages.jsonl"
+A2A_DEFAULT_HOST = os.getenv("A2A_HOST", "127.0.0.1")
+A2A_DEFAULT_PORT = int(os.getenv("A2A_PORT", "5556"))
+
 # ── Event Loop ────────────────────────────────────────────────────────────
 EVENT_LOOP_POLL_INTERVAL = 10   # seconds between dashboard polls
 MAX_TASK_RETRIES = 5            # max retries per task before marking failed

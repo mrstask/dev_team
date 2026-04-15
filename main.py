@@ -11,12 +11,15 @@ Usage:
   python main.py board        # print task board
   python main.py kick <id>    # move a backlog task into architect + action:todo
   python main.py status       # check health of Ollama, OpenRouter, dashboard
+  python main.py a2a-server   # start local A2A gateway for A2A Inspector
 """
 import sys
 
 import click
 
 import config
+from a2a_bridge import store
+from a2a_server import run_a2a_server
 from clients import DashboardClient, OllamaClient
 from core import ROLES
 from dtypes import Action, Status
@@ -203,6 +206,14 @@ def approve_cmd(task_id: int) -> None:
     labels.append(Action.REVIEW)
     db.set_labels(task_id, labels)
     db.log_event(task_id, "human:approved", {"approved_by": "human", "task_id": task_id})
+    store.publish(
+        task=db.get_task(task_id),
+        from_agent="human",
+        to_agent="dev-team",
+        kind="decision",
+        summary=f"Human approved task #{task_id}",
+        payload={"approved": True},
+    )
     config.console.print(f"[bold green]✓ Task #{task_id} approved — continuing to next pipeline stage.[/bold green]")
 
 
@@ -246,10 +257,27 @@ def reject_cmd(task_id: int, feedback: str) -> None:
         "feedback": feedback,
         "retry": current_retry + 1,
     })
+    store.publish(
+        task=db.get_task(task_id),
+        from_agent="human",
+        to_agent="developer:implement",
+        kind="decision",
+        summary=feedback[:400],
+        payload={"approved": False, "retry": current_retry + 1},
+    )
     config.console.print(
         f"[bold red]✗ Task #{task_id} rejected — feedback appended, reset to action:todo "
         f"(retry {current_retry + 1}/{config.MAX_TASK_RETRIES}).[/bold red]"
     )
+
+
+@cli.command("a2a-server")
+@click.option("--host", default=config.A2A_DEFAULT_HOST, show_default=True, help="Bind host")
+@click.option("--port", default=config.A2A_DEFAULT_PORT, show_default=True, type=int, help="Bind port")
+def a2a_server_cmd(host: str, port: int) -> None:
+    """Start a local A2A gateway for A2A Inspector."""
+    _sync_agents()
+    run_a2a_server(host=host, port=port)
 
 
 @cli.command("suggestions")

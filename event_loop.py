@@ -24,6 +24,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 import config
+from a2a_bridge import attachment, store
 from agents import ClaudeAgent, DevAgent, PMAgent, ResearchAgent, TestAgent
 from clients import DashboardClient
 from core import get_role_for_task, get_written_paths, project_context, get_project_root
@@ -273,6 +274,14 @@ def _apply_human_gate(task: dict, gate_name: str) -> bool:
     """
     if config.HUMAN_GATES.get(gate_name, False):
         _replace_action(task, Action.AWAIT_HUMAN)
+        _publish_a2a(
+            task,
+            from_agent="dev-team",
+            to_agent="human",
+            kind="review",
+            summary=f"Human gate '{gate_name}' opened for task #{task['id']}",
+            payload={"gate": gate_name},
+        )
         config.console.print(
             f"\n[bold yellow]⏸  Human gate '{gate_name}'[/bold yellow]  "
             f"— task [bold]#{task['id']}[/bold] paused.\n"
@@ -313,10 +322,30 @@ def _handle_architect_todo(task: dict) -> None:
     console = config.console
 
     # Phase 1: Research — optional, non-blocking
+    _publish_a2a(
+        task,
+        from_agent="dev-team",
+        to_agent="researcher:explore",
+        kind="request",
+        summary="Research the codebase and prepare architect context.",
+        payload={"stage": "architect:todo"},
+    )
     research_run_id = _db.create_run(task["id"], _agent_id_cache.get("researcher:explore"), "research")
     research = ResearchAgent().run(task)
     if research:
         _save_typed_context(task["id"], "research", ResearchContext.model_validate(research))
+        _publish_a2a(
+            task,
+            from_agent="researcher:explore",
+            to_agent="architect:design",
+            kind="handoff",
+            summary=research.get("summary", "")[:400],
+            payload={
+                "relevant_files": research.get("relevant_files", [])[:20],
+                "warning_count": len(research.get("warnings", [])),
+            },
+            attachments=[_context_attachment(task["id"], "research")],
+        )
         _db.update_run(research_run_id, "completed",
                        output_summary=research.get("summary", "")[:200])
     else:
@@ -336,6 +365,19 @@ def _handle_architect_todo(task: dict) -> None:
         return
 
     _save_typed_context(task["id"], "architect", result)
+    _publish_a2a(
+        task,
+        from_agent="architect:design",
+        to_agent="dev-team",
+        kind="handoff",
+        summary=(result.summary or "")[:400],
+        payload={
+            "file_count": len(result.files),
+            "subtask_count": len(result.subtasks),
+            "subtasks": [s.title for s in result.subtasks],
+        },
+        attachments=[_context_attachment(task["id"], "architect")],
+    )
     _db.update_run(
         run_id, "completed",
         output_summary=f"{len(result.files)} file(s): {(result.summary or '')[:200]}",
@@ -379,8 +421,27 @@ def _handle_architect_review(task: dict) -> None:
         console.print(f"  [green]Created subtask #{sid} (queue pos {position}):[/green] {st.title}")
 
     files_raw = [f.model_dump() for f in ctx.files]
-    for st_id in subtask_ids:
+    for position, (st_id, subtask) in enumerate(zip(subtask_ids, ctx.subtasks, strict=False)):
         _save_context(st_id, "skeleton_files", files_raw)
+        _publish_a2a(
+            task=None,
+            task_id=st_id,
+            task_title=subtask.title,
+            task_status=Status.DEVELOP,
+            priority=subtask.priority or task["priority"],
+            parent_task_id=task["id"],
+            from_agent="architect:design",
+            to_agent="developer:implement",
+            kind="handoff",
+            summary=subtask.description[:400],
+            payload={
+                "parent_task_id": task["id"],
+                "queue_position": position,
+                "file_count": len(ctx.files),
+                "plan": ctx.plan[:800],
+            },
+            attachments=[_context_attachment(st_id, "skeleton_files")],
+        )
 
     desc = task.get("description", "")
     subtask_lines = "\n".join(f"- #{sid}" for sid in subtask_ids)
@@ -409,6 +470,24 @@ def _handle_develop_todo(task: dict) -> None:
 
     fb_ctx = _load_typed_context(task["id"], "feedback", FeedbackContext)
 
+    _publish_a2a(
+        task,
+        from_agent="dev-team",
+        to_agent=role,
+        kind="request",
+        summary="Implement the assigned task artifacts.",
+        payload={
+            "has_skeleton_files": bool(skeleton_files),
+            "has_previous_files": bool(previous_files),
+            "feedback_entries": len(fb_ctx.entries) if fb_ctx else 0,
+        },
+        attachments=_existing_attachments(
+            _context_attachment(task["id"], "skeleton_files"),
+            _context_attachment(task["id"], "previous_files"),
+            _context_attachment(task["id"], "feedback"),
+        ),
+    )
+
     def _save_developer_loop(messages: list[dict]) -> None:
         _db.log_event(task["id"], "react_loop:developer", _summarize_react_loop(messages))
 
@@ -429,6 +508,18 @@ def _handle_develop_todo(task: dict) -> None:
         return
 
     _save_typed_context(task["id"], "developer", result)
+    _publish_a2a(
+        task,
+        from_agent=role,
+        to_agent="tester:unit-tests",
+        kind="handoff",
+        summary=(result.summary or "")[:400],
+        payload={
+            "file_count": len(result.files),
+            "files": [f.path for f in result.files],
+        },
+        attachments=[_context_attachment(task["id"], "developer")],
+    )
     _db.update_run(
         run_id, "completed",
         output_summary=f"{len(result.files)} file(s): {(result.summary or '')[:200]}",
@@ -458,6 +549,15 @@ def _handle_develop_review(task: dict) -> None:
     _move_task(task, Status.TESTING)
     _replace_action(task, Action.TODO)
     _db.log_event(task["id"], "develop_review", {"auto_approved": True})
+    _publish_a2a(
+        task,
+        from_agent="dev-team",
+        to_agent="tester:unit-tests",
+        kind="review",
+        summary="Developer output auto-approved and moved to testing.",
+        payload={"auto_approved": True},
+        attachments=[_context_attachment(task["id"], "developer")],
+    )
     console.print("[bold green]Auto-approved developer output. Moving to testing.[/bold green]")
 
 
@@ -488,6 +588,19 @@ def _handle_testing_todo(task: dict) -> None:
         summary=dev_ctx.summary,
     )
     _save_typed_context(task["id"], "testing", testing_ctx)
+    _publish_a2a(
+        task,
+        from_agent="tester:unit-tests",
+        to_agent="pm:testing-review",
+        kind="handoff",
+        summary=f"CI status {ci_result.status}. {len(test_result.files)} test file(s) generated.",
+        payload={
+            "ci_status": ci_result.status,
+            "test_files": [f.path for f in test_result.files],
+            "sha": ci_result.sha,
+        },
+        attachments=[_context_attachment(task["id"], "testing")],
+    )
 
     _db.update_run(
         run_id, "completed",
@@ -526,6 +639,15 @@ def _handle_testing_review(task: dict) -> None:
 
     if decision.approved:
         if ctx.ci_result.status == "committed":
+            _publish_a2a(
+                task,
+                from_agent="pm:testing-review",
+                to_agent="dev-team",
+                kind="decision",
+                summary="Task approved and marked done.",
+                payload={"approved": True, "sha": ctx.ci_result.sha},
+                attachments=[_context_attachment(task["id"], "testing")],
+            )
             _db.log_event(task["id"], "pm:testing_review", {"approved": True, "sha": ctx.ci_result.sha})
             _clear_context(task["id"])
             _replace_action(task, None)
@@ -537,6 +659,15 @@ def _handle_testing_review(task: dict) -> None:
             if task.get("parent_task_id"):
                 _check_single_parent(task["parent_task_id"])
         else:
+            _publish_a2a(
+                task,
+                from_agent="pm:testing-review",
+                to_agent="developer:implement",
+                kind="decision",
+                summary="PM approved the output, but CI did not produce a commit.",
+                payload={"approved": False, "ci_status": ctx.ci_result.status},
+                attachments=[_context_attachment(task["id"], "testing")],
+            )
             _move_task(task, Status.DEVELOP)
             _save_context(task["id"], "previous_files", files_raw)
             _append_feedback(task, f"CI status: {ctx.ci_result.status}. {ci_output[-500:]}", "CI did not commit")
@@ -550,6 +681,18 @@ def _handle_testing_review(task: dict) -> None:
             })
             console.print("[yellow]PM approved but CI didn't commit. Back to develop.[/yellow]")
     else:
+        _publish_a2a(
+            task,
+            from_agent="pm:testing-review",
+            to_agent="developer:implement",
+            kind="decision",
+            summary=(decision.feedback or "Testing review rejected")[:400],
+            payload={"approved": False, "retry": _get_retry_count(task) + 1},
+            attachments=_existing_attachments(
+                _context_attachment(task["id"], "testing"),
+                _context_attachment(task["id"], "feedback"),
+            ),
+        )
         _move_task(task, Status.DEVELOP)
         non_test_files = [f.model_dump() for f in ctx.files if not f.path.startswith("backend/tests/")]
         _save_context(task["id"], "previous_files", non_test_files)
@@ -751,6 +894,51 @@ def _clear_context(task_id: int) -> None:
     d = config.CONTEXT_DIR / str(task_id)
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _context_attachment(task_id: int, key: str):
+    path = config.CONTEXT_DIR / str(task_id) / f"{key}.json"
+    if not path.exists():
+        return None
+    return attachment(f"{key}.json", path)
+
+
+def _existing_attachments(*items):
+    return [item for item in items if item is not None]
+
+
+def _publish_a2a(
+    task: dict | None,
+    *,
+    from_agent: str,
+    to_agent: str,
+    kind: str,
+    summary: str,
+    payload: dict | None = None,
+    attachments: list | None = None,
+    task_id: int | None = None,
+    task_title: str = "",
+    task_status: str = "",
+    priority: str = "",
+    parent_task_id: int | None = None,
+) -> None:
+    try:
+        store.publish(
+            task=task,
+            task_id=task_id,
+            task_title=task_title,
+            task_status=task_status,
+            priority=priority,
+            parent_task_id=parent_task_id,
+            from_agent=from_agent,
+            to_agent=to_agent,
+            kind=kind,
+            summary=summary,
+            payload=payload,
+            attachments=attachments,
+        )
+    except Exception:
+        pass
 
 
 def _update_claude_md(task: dict, files: list[dict], summary: str) -> None:
